@@ -1,0 +1,28 @@
+.DS_Store
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+
+# Xcode user-specific files
+*.xcuserstate
+xcuserdata/
+DerivedData/
+
+# Arduino build artifacts
+*.bin
+*.elf
+*.map
+*.hex
+
+# IDE
+.vscode/
+.idea/
