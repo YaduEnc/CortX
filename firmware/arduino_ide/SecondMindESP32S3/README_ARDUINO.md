@@ -13,7 +13,7 @@
    - `Upload Speed -> 921600` (use `115200` if upload is unstable)
 5. Open sketch:
    - `firmware/arduino_ide/SecondMindESP32S3/SecondMindESP32S3.ino`
-6. Edit `config.h` in same folder:
+6. Edit config block at top of `SecondMindESP32S3.ino` (single-file setup):
    - Wi-Fi SSID/password
    - `API_BASE_URL`
    - `DEVICE_CODE`, `DEVICE_SECRET`

@@ -340,7 +340,7 @@ struct PairDeviceSheet: View {
                 }
             }
             .task {
-                ble.startScanning()
+                // User taps Scan after Bluetooth state settles.
             }
             .onDisappear {
                 ble.stopScanning()
@@ -411,10 +411,26 @@ struct PairDeviceSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             if ble.devices.isEmpty {
                 VStack(spacing: 8) {
-                    ProgressView()
-                    Text("Scanning for nearby SecondMind devices")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    if ble.isScanning {
+                        ProgressView()
+                        Text("Scanning for nearby SecondMind devices")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else if ble.bluetoothReady {
+                        Image(systemName: "dot.radiowaves.left.and.right")
+                            .font(.system(size: 24))
+                            .foregroundStyle(.blue)
+                        Text("Tap Scan to find nearby SecondMind devices")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Image(systemName: "bolt.slash")
+                            .font(.system(size: 24))
+                            .foregroundStyle(.orange)
+                        Text("Turn on Bluetooth and allow access, then tap Scan")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 26)

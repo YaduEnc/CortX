@@ -51,8 +51,20 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
 
     func startScanning() {
         guard centralManager.state == .poweredOn else {
-            errorMessage = "Bluetooth is not powered on."
-            statusMessage = "Turn on Bluetooth and retry."
+            switch centralManager.state {
+            case .poweredOff:
+                errorMessage = "Bluetooth is not powered on."
+                statusMessage = "Turn on Bluetooth and retry."
+            case .unauthorized:
+                errorMessage = "Bluetooth permission denied. Allow Bluetooth access in Settings."
+                statusMessage = "Bluetooth permission required."
+            case .unsupported:
+                errorMessage = "Bluetooth is not supported on this device."
+                statusMessage = "Bluetooth unsupported."
+            default:
+                errorMessage = "Bluetooth is initializing. Wait 2 seconds and tap Scan again."
+                statusMessage = "Bluetooth is initializing..."
+            }
             return
         }
 
@@ -62,8 +74,10 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
         errorMessage = nil
         statusMessage = "Scanning for SecondMind devices..."
 
+        // Use broad scan and manually filter, because some ESP32 builds advertise
+        // custom 128-bit service UUIDs in a way iOS service-filter scan may miss.
         centralManager.scanForPeripherals(
-            withServices: [CBUUID(string: AppConfig.BLE.pairServiceUUID)],
+            withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
         isScanning = true
@@ -247,26 +261,47 @@ extension BLEPairingViewModel: CBCentralManagerDelegate {
         switch central.state {
         case .poweredOn:
             statusMessage = "Bluetooth is ready."
+            errorMessage = nil
         case .poweredOff:
             statusMessage = "Bluetooth is off."
+            stopScanning()
         case .unauthorized:
             statusMessage = "Bluetooth permission denied."
             errorMessage = "Enable Bluetooth permission in iOS Settings."
+            stopScanning()
         case .unsupported:
             statusMessage = "Bluetooth unsupported on this device."
+            stopScanning()
         default:
             statusMessage = "Bluetooth unavailable."
+            stopScanning()
         }
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        let name = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? "SecondMind Device"
+        let advertisedName = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String)
+        let nameForMatch = advertisedName?.lowercased() ?? ""
+
+        let advertisedServices = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID]) ?? []
+        let overflowServices = (advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID]) ?? []
+        let allServices = advertisedServices + overflowServices
+        let hasPairService = allServices.contains { $0.uuidString.caseInsensitiveCompare(AppConfig.BLE.pairServiceUUID) == .orderedSame }
+
+        let looksLikeSecondMindName =
+            nameForMatch.contains("secondmind") ||
+            nameForMatch.contains("esp32") ||
+            nameForMatch.contains("xiao")
+        guard hasPairService || looksLikeSecondMindName else {
+            return
+        }
+
+        let displayName = advertisedName ?? (hasPairService ? "SecondMind Device" : "Unknown BLE Device")
         peripherals[peripheral.identifier] = peripheral
 
         if let index = devices.firstIndex(where: { $0.id == peripheral.identifier }) {
-            devices[index] = DiscoveredBLEDevice(id: peripheral.identifier, name: name, rssi: RSSI.intValue)
+            devices[index] = DiscoveredBLEDevice(id: peripheral.identifier, name: displayName, rssi: RSSI.intValue)
         } else {
-            devices.append(DiscoveredBLEDevice(id: peripheral.identifier, name: name, rssi: RSSI.intValue))
+            devices.append(DiscoveredBLEDevice(id: peripheral.identifier, name: displayName, rssi: RSSI.intValue))
         }
 
         devices.sort { $0.rssi > $1.rssi }

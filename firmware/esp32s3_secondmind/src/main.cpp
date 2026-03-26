@@ -93,12 +93,12 @@ void setPairStatus(const String &status) {
 
 class PairTokenCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *characteristic) override {
-    std::string value = characteristic->getValue();
-    if (value.empty()) {
+    String value = characteristic->getValue();
+    if (value.length() == 0) {
       return;
     }
 
-    g_pairTokenFromApp = String(value.c_str());
+    g_pairTokenFromApp = value;
     g_pairTokenReady = true;
     Serial.println("[PAIR] Received pair_token over BLE");
     setPairStatus("token_received");
