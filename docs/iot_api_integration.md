@@ -46,6 +46,34 @@ Response:
 Use this header for protected endpoints:
 - `Authorization: Bearer <jwt>`
 
+### 3) Pull queued network profile (optional)
+`POST /device/network-profile/pull`
+
+Headers:
+- `Authorization: Bearer <jwt>`
+- `Content-Type: application/json`
+
+Body:
+```json
+{}
+```
+
+Responses:
+```json
+{
+  "status": "none"
+}
+```
+or
+```json
+{
+  "status": "ready",
+  "ssid": "UserHotspotOrRouter",
+  "password": "secret",
+  "source": "app_manual"
+}
+```
+
 ## Session + Chunk Protocol
 
 ## Audio format (v1)
@@ -147,10 +175,12 @@ Returns transcript text + segments when ready.
 
 ## Firmware Reliability Rules
 - Maintain local ring buffer for unsent chunks.
+- Persist unsent chunks to flash/PSRAM-backed queue if Wi-Fi is unavailable.
 - Retries: exponential backoff (`0.5s, 1s, 2s, 4s`, max 5 attempts).
 - On timeout/network drop, re-send same `chunk_index`.
 - Never skip indices.
 - Call finalize only after all chunks have server ack.
+- If Wi-Fi cannot connect, keep queue growth bounded and drop oldest chunks after configured storage ceiling.
 
 ## CRC32
 - Compute CRC32 over raw chunk bytes before upload.

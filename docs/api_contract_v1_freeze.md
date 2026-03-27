@@ -91,6 +91,53 @@ Response `200`:
 }
 ```
 
+### POST `/v1/app/devices/{device_id}/network-profile`
+Headers:
+- `Authorization: Bearer <app_jwt>`
+
+Request:
+```json
+{
+  "ssid": "UserHotspotOrRouter",
+  "password": "secret",
+  "source": "app_manual"
+}
+```
+
+Response `200`:
+```json
+{
+  "status": "queued",
+  "expires_in_seconds": 86400
+}
+```
+
+### POST `/v1/device/network-profile/pull`
+Headers:
+- `Authorization: Bearer <device_jwt>`
+
+Request:
+```json
+{}
+```
+
+Response `200` (none):
+```json
+{
+  "status": "none"
+}
+```
+
+Response `200` (ready):
+```json
+{
+  "status": "ready",
+  "ssid": "UserHotspotOrRouter",
+  "password": "secret",
+  "source": "app_manual"
+}
+```
+
 ## 3) Capture APIs
 
 ### POST `/v1/capture/sessions`

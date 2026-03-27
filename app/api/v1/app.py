@@ -12,6 +12,7 @@ from app.models.app_user import AppUser
 from app.models.device import Device
 from app.models.pairing import DeviceUserBinding
 from app.models.transcript import Transcript
+from app.services.network_profiles import NETWORK_PROFILE_TTL_SECONDS, queue_network_profile
 from app.services.storage import get_storage
 from app.schemas.app_user import (
     AppCaptureListItemResponse,
@@ -21,6 +22,7 @@ from app.schemas.app_user import (
     AppTokenResponse,
     PairedDeviceResponse,
 )
+from app.schemas.network import AppQueueNetworkProfileRequest, AppQueueNetworkProfileResponse
 
 router = APIRouter(prefix="/app", tags=["app"])
 
@@ -77,6 +79,36 @@ def list_user_devices(
         )
         for binding, device in rows
     ]
+
+
+@router.post("/devices/{device_id}/network-profile", response_model=AppQueueNetworkProfileResponse)
+def queue_device_network_profile(
+    device_id: str,
+    payload: AppQueueNetworkProfileRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppQueueNetworkProfileResponse:
+    binding = db.scalar(
+        select(DeviceUserBinding).where(
+            DeviceUserBinding.device_id == device_id,
+            DeviceUserBinding.user_id == user.id,
+            DeviceUserBinding.is_active.is_(True),
+        )
+    )
+    if not binding:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paired device not found")
+
+    normalized_ssid = payload.ssid.strip()
+    if not normalized_ssid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="SSID cannot be empty")
+
+    queue_network_profile(
+        device_id=device_id,
+        ssid=normalized_ssid,
+        password=payload.password,
+        source=payload.source.strip() or "app_manual",
+    )
+    return AppQueueNetworkProfileResponse(status="queued", expires_in_seconds=NETWORK_PROFILE_TTL_SECONDS)
 
 
 @router.get("/captures", response_model=list[AppCaptureListItemResponse])

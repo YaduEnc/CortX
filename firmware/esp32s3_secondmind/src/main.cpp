@@ -20,6 +20,8 @@ static const char *DEVICE_INFO_CHAR_UUID = "94dcbd89-0f5a-4fb3-9f61-a3d2664d35d1
 static const char *PAIR_NONCE_CHAR_UUID = "2dc45f2c-5924-48cf-a615-f9e3c1070ad4";
 static const char *PAIR_TOKEN_CHAR_UUID = "9f8b48ad-e983-4abf-8b56-53f31c0f7596";
 static const char *PAIR_STATUS_CHAR_UUID = "ea85f9b1-1c57-4fdd-95ac-5c92b8a07b3d";
+static const char *WIFI_CONFIG_CHAR_UUID = "f9eb1c79-9c16-4bc3-bd03-563a72fce6c0";
+static const char *WIFI_STATUS_CHAR_UUID = "ac29d4a8-6d7f-4b91-9d9e-66e2b0fd5e61";
 
 static const uint32_t PAIR_MODE_WINDOW_MS = 120000;
 static const uint32_t LONG_PRESS_MS = 5000;
@@ -30,13 +32,19 @@ static BLECharacteristic *g_deviceInfoChar = nullptr;
 static BLECharacteristic *g_pairNonceChar = nullptr;
 static BLECharacteristic *g_pairTokenChar = nullptr;
 static BLECharacteristic *g_pairStatusChar = nullptr;
+static BLECharacteristic *g_wifiConfigChar = nullptr;
+static BLECharacteristic *g_wifiStatusChar = nullptr;
 
 static Preferences g_prefs;
 
 static String g_deviceJwt;
 static String g_pairNonce;
 static String g_pairTokenFromApp;
+static String g_wifiConfigFromApp;
+static String g_wifiSsid;
+static String g_wifiPassword;
 static bool g_pairTokenReady = false;
+static bool g_wifiConfigReady = false;
 static bool g_isPairingMode = false;
 static bool g_isPaired = false;
 
@@ -91,6 +99,101 @@ void setPairStatus(const String &status) {
   Serial.printf("[PAIR] status=%s\n", status.c_str());
 }
 
+void setWifiStatus(const String &status) {
+  if (!g_wifiStatusChar) {
+    return;
+  }
+  g_wifiStatusChar->setValue(status.c_str());
+  g_wifiStatusChar->notify();
+  Serial.printf("[WIFI] status=%s\n", status.c_str());
+}
+
+void loadWifiCredentials() {
+  g_wifiSsid = g_prefs.getString("wifi_ssid", "");
+  g_wifiPassword = g_prefs.getString("wifi_pass", "");
+
+  if (g_wifiSsid.isEmpty()) {
+    g_wifiSsid = String(WIFI_SSID);
+  }
+  if (g_wifiPassword.isEmpty()) {
+    g_wifiPassword = String(WIFI_PASSWORD);
+  }
+}
+
+void saveWifiCredentials(const String &ssid, const String &password) {
+  g_prefs.putString("wifi_ssid", ssid);
+  g_prefs.putString("wifi_pass", password);
+  g_wifiSsid = ssid;
+  g_wifiPassword = password;
+}
+
+bool connectToWifi(const String &ssid, const String &password) {
+  if (ssid.isEmpty()) {
+    Serial.println("[WIFI] Empty SSID, cannot connect");
+    return false;
+  }
+
+  if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == ssid) {
+    return true;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFi.disconnect(true, false);
+    delay(250);
+  }
+
+  Serial.printf("[WIFI] Connecting to %s\n", ssid.c_str());
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid.c_str(), password.c_str());
+
+  uint32_t started = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - started < 30000) {
+    delay(250);
+    Serial.print('.');
+  }
+  Serial.println();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[WIFI] Failed to connect");
+    return false;
+  }
+
+  Serial.printf("[WIFI] Connected, IP=%s\n", WiFi.localIP().toString().c_str());
+  return true;
+}
+
+bool applyWifiConfigPayload(const String &payload, bool shouldPersist = true) {
+  DynamicJsonDocument in(1024);
+  if (deserializeJson(in, payload)) {
+    setWifiStatus("bad_payload");
+    Serial.printf("[WIFI] Invalid config payload: %s\n", payload.c_str());
+    return false;
+  }
+
+  String ssid = String((const char *)(in["ssid"] | ""));
+  String password = String((const char *)(in["password"] | ""));
+  ssid.trim();
+
+  if (ssid.isEmpty()) {
+    setWifiStatus("invalid_ssid");
+    return false;
+  }
+
+  bool persist = shouldPersist && (in["persist"] | true);
+  if (persist) {
+    saveWifiCredentials(ssid, password);
+  }
+
+  setWifiStatus("connecting");
+  if (connectToWifi(ssid, password)) {
+    setWifiStatus("connected");
+    return true;
+  }
+
+  setWifiStatus(persist ? "saved_not_connected" : "connect_failed");
+  return false;
+}
+
 class PairTokenCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *characteristic) override {
     String value = characteristic->getValue();
@@ -102,6 +205,20 @@ class PairTokenCallbacks : public BLECharacteristicCallbacks {
     g_pairTokenReady = true;
     Serial.println("[PAIR] Received pair_token over BLE");
     setPairStatus("token_received");
+  }
+};
+
+class WifiConfigCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *characteristic) override {
+    String value = characteristic->getValue();
+    if (value.length() == 0) {
+      return;
+    }
+
+    g_wifiConfigFromApp = value;
+    g_wifiConfigReady = true;
+    setWifiStatus("config_received");
+    Serial.println("[WIFI] Received config over BLE");
   }
 };
 
@@ -128,6 +245,16 @@ void setupBle() {
       BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
   g_pairStatusChar->addDescriptor(new BLE2902());
 
+  g_wifiConfigChar = g_pairService->createCharacteristic(
+      WIFI_CONFIG_CHAR_UUID,
+      BLECharacteristic::PROPERTY_WRITE);
+  g_wifiConfigChar->setCallbacks(new WifiConfigCallbacks());
+
+  g_wifiStatusChar = g_pairService->createCharacteristic(
+      WIFI_STATUS_CHAR_UUID,
+      BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
+  g_wifiStatusChar->addDescriptor(new BLE2902());
+
   StaticJsonDocument<160> infoDoc;
   infoDoc["device_code"] = DEVICE_CODE;
   infoDoc["fw_version"] = "1.0.0";
@@ -138,6 +265,7 @@ void setupBle() {
   g_deviceInfoChar->setValue(infoJson.c_str());
   g_pairNonceChar->setValue("not_in_pair_mode");
   g_pairStatusChar->setValue("idle");
+  g_wifiStatusChar->setValue("idle");
 
   g_pairService->start();
 }
@@ -170,28 +298,7 @@ void exitPairingMode(const String &finalStatus) {
 }
 
 bool ensureWifiConnected() {
-  if (WiFi.status() == WL_CONNECTED) {
-    return true;
-  }
-
-  Serial.printf("[WIFI] Connecting to %s\n", WIFI_SSID);
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  uint32_t started = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - started < 30000) {
-    delay(250);
-    Serial.print('.');
-  }
-  Serial.println();
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[WIFI] Failed to connect");
-    return false;
-  }
-
-  Serial.printf("[WIFI] Connected, IP=%s\n", WiFi.localIP().toString().c_str());
-  return true;
+  return connectToWifi(g_wifiSsid, g_wifiPassword);
 }
 
 bool postJson(const String &url,
@@ -290,6 +397,46 @@ bool completePairingWithBackend(const String &pairToken) {
   g_prefs.putBool("paired", true);
   Serial.println("[PAIR] Device paired successfully");
   return true;
+}
+
+bool pullNetworkProfileFromBackend() {
+  if (g_deviceJwt.isEmpty()) {
+    return false;
+  }
+
+  String response;
+  int code = 0;
+  if (!postJson(apiUrl("/device/network-profile/pull"), "{}", response, g_deviceJwt, &code)) {
+    Serial.println("[WIFI] profile pull request failed");
+    return false;
+  }
+
+  if (code != 200) {
+    Serial.printf("[WIFI] profile pull failed code=%d body=%s\n", code, response.c_str());
+    return false;
+  }
+
+  DynamicJsonDocument out(1024);
+  if (deserializeJson(out, response)) {
+    Serial.println("[WIFI] profile pull JSON parse failed");
+    return false;
+  }
+
+  String status = String((const char *)(out["status"] | "none"));
+  if (status != "ready") {
+    return true;
+  }
+
+  StaticJsonDocument<384> doc;
+  doc["ssid"] = String((const char *)(out["ssid"] | ""));
+  doc["password"] = String((const char *)(out["password"] | ""));
+  doc["persist"] = true;
+
+  String payload;
+  serializeJson(doc, payload);
+
+  Serial.printf("[WIFI] Applying queued profile source=%s\n", String((const char *)(out["source"] | "unknown")).c_str());
+  return applyWifiConfigPayload(payload, true);
 }
 
 bool createCaptureSession(String &sessionIdOut) {
@@ -469,6 +616,8 @@ bool runCaptureSession() {
     return false;
   }
 
+  pullNetworkProfileFromBackend();
+
   String sessionId;
   if (!createCaptureSession(sessionId)) {
     Serial.println("[CAPTURE] create session failed");
@@ -506,6 +655,15 @@ bool runCaptureSession() {
   }
 
   return finalizeSession(sessionId);
+}
+
+void handleWifiProvisioningState() {
+  if (!g_wifiConfigReady) {
+    return;
+  }
+
+  g_wifiConfigReady = false;
+  applyWifiConfigPayload(g_wifiConfigFromApp, true);
 }
 
 void handlePairButton() {
@@ -590,6 +748,7 @@ void setup() {
 
   g_prefs.begin("secondmind", false);
   g_isPaired = g_prefs.getBool("paired", false);
+  loadWifiCredentials();
 
   setupBle();
   ensureWifiConnected();
@@ -597,7 +756,9 @@ void setup() {
 
   if (g_isPaired) {
     Serial.println("[BOOT] Device already paired (from NVS)");
-    authDevice();
+    if (authDevice()) {
+      pullNetworkProfileFromBackend();
+    }
   } else {
     Serial.println("[BOOT] Device not paired yet.");
 #if TEST_MODE_AUTO_PAIR_ON_BOOT
@@ -615,6 +776,7 @@ void loop() {
   handleSerialCommands();
   handlePairButton();
   handlePairingState();
+  handleWifiProvisioningState();
 
   if (g_captureRequested) {
     g_captureRequested = false;

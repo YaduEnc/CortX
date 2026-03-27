@@ -2,11 +2,14 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_device
 from app.core.config import get_settings
 from app.core.security import create_device_access_token, hash_secret, verify_secret
 from app.db.session import get_db
 from app.models.device import Device
 from app.schemas.device import DeviceAuthRequest, DeviceRegisterRequest, DeviceResponse, TokenResponse
+from app.schemas.network import DeviceNetworkProfilePullResponse
+from app.services.network_profiles import consume_network_profile
 
 router = APIRouter(prefix="/device", tags=["device"])
 
@@ -42,3 +45,21 @@ def authenticate_device(payload: DeviceAuthRequest, db: Session = Depends(get_db
     token = create_device_access_token(device.id)
     settings = get_settings()
     return TokenResponse(access_token=token, expires_in_minutes=settings.jwt_expires_minutes)
+
+
+@router.post("/network-profile/pull", response_model=DeviceNetworkProfilePullResponse)
+def pull_network_profile(device: Device = Depends(get_current_device)) -> DeviceNetworkProfilePullResponse:
+    profile = consume_network_profile(device.id)
+    if not profile:
+        return DeviceNetworkProfilePullResponse(status="none")
+
+    ssid = str(profile.get("ssid") or "").strip()
+    if not ssid:
+        return DeviceNetworkProfilePullResponse(status="none")
+
+    return DeviceNetworkProfilePullResponse(
+        status="ready",
+        ssid=ssid,
+        password=str(profile.get("password") or ""),
+        source=str(profile.get("source") or "app_manual"),
+    )

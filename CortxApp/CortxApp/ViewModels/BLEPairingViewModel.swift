@@ -17,6 +17,9 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
     @Published var errorMessage: String?
     @Published var pairingStatus: PairingStatus = .idle
     @Published var discoveredDeviceCode: String?
+    @Published var wifiStatusMessage = "Wi-Fi idle"
+    @Published var canConfigureWifi = false
+    @Published var isSendingWifiConfig = false
 
     private lazy var centralManager = CBCentralManager(delegate: self, queue: .main)
     private var peripherals: [UUID: CBPeripheral] = [:]
@@ -28,6 +31,8 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
     private var pairNonceCharacteristic: CBCharacteristic?
     private var pairTokenCharacteristic: CBCharacteristic?
     private var pairStatusCharacteristic: CBCharacteristic?
+    private var wifiConfigCharacteristic: CBCharacteristic?
+    private var wifiStatusCharacteristic: CBCharacteristic?
 
     private var readDeviceInfo: BLEDeviceInfo?
     private var readPairNonce: String?
@@ -119,6 +124,51 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
         errorMessage = nil
     }
 
+    func disconnect() {
+        shouldIgnoreDisconnectFailure = true
+        if let connectedPeripheral {
+            centralManager.cancelPeripheralConnection(connectedPeripheral)
+        }
+        connectedPeripheral = nil
+        canConfigureWifi = false
+    }
+
+    func sendWifiConfig(ssid: String, password: String) {
+        guard let peripheral = connectedPeripheral else {
+            errorMessage = "Connect to a device first."
+            return
+        }
+        guard let wifiConfigCharacteristic else {
+            errorMessage = "Device does not expose Wi-Fi config characteristic."
+            return
+        }
+
+        let normalizedSSID = ssid.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedSSID.isEmpty else {
+            errorMessage = "SSID is required."
+            return
+        }
+
+        let payload: [String: Any] = [
+            "ssid": normalizedSSID,
+            "password": password,
+            "persist": true
+        ]
+        guard
+            let data = try? JSONSerialization.data(withJSONObject: payload),
+            let text = String(data: data, encoding: .utf8),
+            let value = text.data(using: .utf8)
+        else {
+            errorMessage = "Failed to encode Wi-Fi payload."
+            return
+        }
+
+        isSendingWifiConfig = true
+        wifiStatusMessage = "Sending Wi-Fi config..."
+        errorMessage = nil
+        peripheral.writeValue(value, for: wifiConfigCharacteristic, type: .withResponse)
+    }
+
     private func resetPairingState(keepDiscovery: Bool) {
         requestInFlightTask?.cancel()
         requestInFlightTask = nil
@@ -137,11 +187,16 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
         pairNonceCharacteristic = nil
         pairTokenCharacteristic = nil
         pairStatusCharacteristic = nil
+        wifiConfigCharacteristic = nil
+        wifiStatusCharacteristic = nil
         backendPairingRequested = false
         shouldIgnoreDisconnectFailure = false
         activeAppToken = nil
         apiClient = nil
         statusMessage = "Ready to pair."
+        wifiStatusMessage = "Wi-Fi idle"
+        canConfigureWifi = false
+        isSendingWifiConfig = false
 
         if !keepDiscovery {
             devices = []
@@ -226,10 +281,6 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
             statusTimeoutTask?.cancel()
             isBusy = false
             errorMessage = nil
-            shouldIgnoreDisconnectFailure = true
-            if let connectedPeripheral {
-                centralManager.cancelPeripheralConnection(connectedPeripheral)
-            }
         case .failed, .expired:
             failPairing(status.userLabel)
         default:
@@ -321,6 +372,9 @@ extension BLEPairingViewModel: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        connectedPeripheral = nil
+        canConfigureWifi = false
+        isSendingWifiConfig = false
         if isBusy && !shouldIgnoreDisconnectFailure {
             failPairing(error?.localizedDescription ?? "Device disconnected during pairing.")
         } else {
@@ -348,7 +402,9 @@ extension BLEPairingViewModel: CBPeripheralDelegate {
             CBUUID(string: AppConfig.BLE.deviceInfoCharacteristicUUID),
             CBUUID(string: AppConfig.BLE.pairNonceCharacteristicUUID),
             CBUUID(string: AppConfig.BLE.pairTokenCharacteristicUUID),
-            CBUUID(string: AppConfig.BLE.pairStatusCharacteristicUUID)
+            CBUUID(string: AppConfig.BLE.pairStatusCharacteristicUUID),
+            CBUUID(string: AppConfig.BLE.wifiConfigCharacteristicUUID),
+            CBUUID(string: AppConfig.BLE.wifiStatusCharacteristicUUID)
         ]
         peripheral.discoverCharacteristics(uuids, for: service)
     }
@@ -379,10 +435,17 @@ extension BLEPairingViewModel: CBPeripheralDelegate {
                 pairStatusCharacteristic = characteristic
                 peripheral.setNotifyValue(true, for: characteristic)
                 peripheral.readValue(for: characteristic)
+            case AppConfig.BLE.wifiConfigCharacteristicUUID:
+                wifiConfigCharacteristic = characteristic
+            case AppConfig.BLE.wifiStatusCharacteristicUUID:
+                wifiStatusCharacteristic = characteristic
+                peripheral.setNotifyValue(true, for: characteristic)
+                peripheral.readValue(for: characteristic)
             default:
                 break
             }
         }
+        canConfigureWifi = (wifiConfigCharacteristic != nil && wifiStatusCharacteristic != nil)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -404,6 +467,9 @@ extension BLEPairingViewModel: CBPeripheralDelegate {
             readPairNonce = text.trimmingCharacters(in: .whitespacesAndNewlines)
         case AppConfig.BLE.pairStatusCharacteristicUUID:
             handlePairStatusUpdate(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        case AppConfig.BLE.wifiStatusCharacteristicUUID:
+            wifiStatusMessage = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            isSendingWifiConfig = false
         default:
             break
         }
@@ -419,6 +485,9 @@ extension BLEPairingViewModel: CBPeripheralDelegate {
 
         if characteristic.uuid.uuidString.lowercased() == AppConfig.BLE.pairTokenCharacteristicUUID {
             statusMessage = "Pair token sent. Waiting for device confirmation..."
+        } else if characteristic.uuid.uuidString.lowercased() == AppConfig.BLE.wifiConfigCharacteristicUUID {
+            wifiStatusMessage = "Wi-Fi config sent. Waiting for device status..."
+            isSendingWifiConfig = false
         }
     }
 }

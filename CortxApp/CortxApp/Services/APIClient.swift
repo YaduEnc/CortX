@@ -81,6 +81,22 @@ final class APIClient {
         return try await send(path: "pairing/start", method: "POST", body: body, bearerToken: accessToken)
     }
 
+    func queueDeviceNetworkProfile(
+        deviceID: String,
+        ssid: String,
+        password: String,
+        source: String = "app_manual",
+        accessToken: String
+    ) async throws -> QueueNetworkProfileResponse {
+        let body = QueueNetworkProfileRequest(ssid: ssid, password: password, source: source)
+        return try await send(
+            path: "app/devices/\(deviceID)/network-profile",
+            method: "POST",
+            body: body,
+            bearerToken: accessToken
+        )
+    }
+
     func listCaptures(accessToken: String, limit: Int = 30) async throws -> [AppCaptureSession] {
         let clamped = max(1, min(limit, 100))
         return try await send(path: "app/captures?limit=\(clamped)", method: "GET", bearerToken: accessToken)

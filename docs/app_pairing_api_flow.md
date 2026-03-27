@@ -94,7 +94,44 @@ Response:
 ]
 ```
 
-## 4) View and play saved audio captures
+## 4) Configure device Wi-Fi (manual/hotspot)
+Primary path (works even when device has no internet):
+1. Keep BLE connection open after pairing.
+2. Write JSON to BLE `wifi_config` characteristic:
+```json
+{
+  "ssid": "UserHotspotOrRouter",
+  "password": "secret",
+  "persist": true
+}
+```
+3. Observe BLE `wifi_status` notifications:
+- `config_received`
+- `connecting`
+- `connected`
+- `saved_not_connected` (saved, but AP not reachable now)
+
+Backend queue fallback (for already paired device):
+- `POST /v1/app/devices/{device_id}/network-profile`
+
+Request:
+```json
+{
+  "ssid": "UserHotspotOrRouter",
+  "password": "secret",
+  "source": "app_manual"
+}
+```
+
+Response:
+```json
+{
+  "status": "queued",
+  "expires_in_seconds": 86400
+}
+```
+
+## 5) View and play saved audio captures
 
 ### List captures
 `GET /v1/app/captures?limit=20`
@@ -124,6 +161,7 @@ Headers:
 - `409 Device already paired with another user`: show ownership conflict screen
 - `400 Pairing token expired`: auto-retry from BLE read step
 - `401 Invalid token`: force app re-login
+- `saved_not_connected` wifi status: show "Wi-Fi saved; device will retry when network appears."
 
 ## Security notes for app
 - Never persist `pair_token` after pairing attempt.

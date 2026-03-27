@@ -7,6 +7,7 @@ struct DashboardView: View {
     @State private var loadingAudioSessionID: String?
     @State private var loadingTranscriptSessionID: String?
     @State private var transcriptDisplay: TranscriptDisplay?
+    @State private var reveal = false
 
     var body: some View {
         ZStack {
@@ -33,6 +34,9 @@ struct DashboardView: View {
                     devicesCard
                     recordingsCard
                 }
+                .opacity(reveal ? 1 : 0)
+                .offset(y: reveal ? 0 : 16)
+                .animation(.easeOut(duration: 0.45), value: reveal)
                 .padding(.bottom, 20)
             }
             .padding(16)
@@ -55,6 +59,9 @@ struct DashboardView: View {
             await session.refreshPairedDevices()
             await session.refreshCaptures()
         }
+        .onAppear {
+            reveal = true
+        }
     }
 
     private var header: some View {
@@ -71,7 +78,7 @@ struct DashboardView: View {
                 Button("Logout") {
                     session.logout()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(LiquidSecondaryButtonStyle())
             }
 
             HStack(spacing: 10) {
@@ -80,7 +87,7 @@ struct DashboardView: View {
                 } label: {
                     Label("Pair Device", systemImage: "dot.radiowaves.left.and.right")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(LiquidPrimaryButtonStyle())
 
                 Button {
                     Task {
@@ -90,10 +97,12 @@ struct DashboardView: View {
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(LiquidSecondaryButtonStyle())
                 .disabled(session.isWorking)
             }
         }
+        .padding(14)
+        .liquidCard()
     }
 
     private var devicesCard: some View {
@@ -136,14 +145,7 @@ struct DashboardView: View {
             }
         }
         .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(.ultraThinMaterial)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.white.opacity(0.5), lineWidth: 1)
-        )
+        .liquidCard()
     }
 
     private var recordingsCard: some View {
@@ -158,7 +160,7 @@ struct DashboardView: View {
                     } label: {
                         Label("Stop", systemImage: "stop.fill")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(LiquidSecondaryButtonStyle())
                 }
             }
 
@@ -207,7 +209,7 @@ struct DashboardView: View {
                                     Label("Play", systemImage: "play.fill")
                                 }
                             }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(LiquidPrimaryButtonStyle())
                             .disabled(!capture.isPlayable || loadingAudioSessionID != nil)
 
                             Button {
@@ -221,7 +223,7 @@ struct DashboardView: View {
                                     Label("Transcript", systemImage: "text.bubble")
                                 }
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(LiquidSecondaryButtonStyle())
                             .disabled(loadingTranscriptSessionID != nil)
                         }
                     }
@@ -234,14 +236,7 @@ struct DashboardView: View {
             }
         }
         .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(.ultraThinMaterial)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.white.opacity(0.5), lineWidth: 1)
-        )
+        .liquidCard()
     }
 
     private func playCapture(_ capture: AppCaptureSession) async {
@@ -308,6 +303,9 @@ struct PairDeviceSheet: View {
 
     @ObservedObject var session: AppSessionViewModel
     @StateObject private var ble = BLEPairingViewModel()
+    @State private var wifiSSID = ""
+    @State private var wifiPassword = ""
+    @State private var queueingWifi = false
     let onPaired: () -> Void
 
     var body: some View {
@@ -318,6 +316,7 @@ struct PairDeviceSheet: View {
                 statusCard
 
                 controlsRow
+                wifiCard
 
                 listContent
 
@@ -344,6 +343,7 @@ struct PairDeviceSheet: View {
             }
             .onDisappear {
                 ble.stopScanning()
+                ble.disconnect()
             }
         }
     }
@@ -380,20 +380,17 @@ struct PairDeviceSheet: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.ultraThinMaterial)
-        )
+        .liquidCard()
     }
 
     private var controlsRow: some View {
-        HStack(spacing: 10) {
-            Button {
-                ble.startScanning()
-            } label: {
-                Label("Scan", systemImage: "magnifyingglass")
-            }
-            .buttonStyle(.borderedProminent)
+            HStack(spacing: 10) {
+                Button {
+                    ble.startScanning()
+                } label: {
+                    Label("Scan", systemImage: "magnifyingglass")
+                }
+            .buttonStyle(LiquidPrimaryButtonStyle())
             .disabled(!ble.bluetoothReady)
 
             Button {
@@ -401,7 +398,7 @@ struct PairDeviceSheet: View {
             } label: {
                 Label("Stop", systemImage: "stop.circle")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(LiquidSecondaryButtonStyle())
             .disabled(!ble.isScanning)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -452,7 +449,7 @@ struct PairDeviceSheet: View {
                             }
                             ble.pair(with: device, appToken: appToken, apiClient: session.api())
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(LiquidPrimaryButtonStyle())
                         .disabled(ble.isBusy)
                     }
                     .padding(.vertical, 4)
@@ -461,5 +458,95 @@ struct PairDeviceSheet: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var wifiCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Device Wi-Fi Setup")
+                .font(.subheadline.weight(.semibold))
+            Text("Use your home Wi-Fi or phone hotspot SSID/password. Send over BLE for immediate setup, or queue in backend for next online pull.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            TextField("Wi-Fi SSID", text: $wifiSSID)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textFieldStyle(.roundedBorder)
+            SecureField("Wi-Fi password", text: $wifiPassword)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textFieldStyle(.roundedBorder)
+
+            HStack(spacing: 10) {
+                Button {
+                    ble.sendWifiConfig(ssid: wifiSSID, password: wifiPassword)
+                } label: {
+                    if ble.isSendingWifiConfig {
+                        ProgressView()
+                    } else {
+                        Label("Send over BLE", systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                }
+                .buttonStyle(LiquidPrimaryButtonStyle())
+                .disabled(!ble.canConfigureWifi || ble.isSendingWifiConfig || wifiSSID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                Button {
+                    Task {
+                        await queueWifiInBackend()
+                    }
+                } label: {
+                    if queueingWifi {
+                        ProgressView()
+                    } else {
+                        Label("Queue in backend", systemImage: "tray.and.arrow.down")
+                    }
+                }
+                .buttonStyle(LiquidSecondaryButtonStyle())
+                .disabled(queueingWifi || wifiSSID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            Text("Device Wi-Fi status: \(ble.wifiStatusMessage)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .liquidCard()
+    }
+
+    private func queueWifiInBackend() async {
+        let normalizedSSID = wifiSSID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedSSID.isEmpty else {
+            session.errorMessage = "SSID is required."
+            return
+        }
+        guard let appToken = session.pairingAccessToken() else {
+            session.errorMessage = "You must be logged in."
+            return
+        }
+        guard
+            let deviceCode = ble.discoveredDeviceCode?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !deviceCode.isEmpty,
+            let paired = session.pairedDevices.first(where: { $0.device_code.caseInsensitiveCompare(deviceCode) == .orderedSame })
+        else {
+            session.errorMessage = "Pair the device first so backend can map network profile to it."
+            return
+        }
+
+        queueingWifi = true
+        defer { queueingWifi = false }
+
+        do {
+            let response = try await session.api().queueDeviceNetworkProfile(
+                deviceID: paired.device_id,
+                ssid: normalizedSSID,
+                password: wifiPassword,
+                source: "app_manual",
+                accessToken: appToken
+            )
+            ble.wifiStatusMessage = "Queued in backend (\(response.expires_in_seconds / 60) min TTL)."
+        } catch {
+            session.errorMessage = error.localizedDescription
+        }
     }
 }

@@ -32,6 +32,17 @@ struct PairingStartResponse: Decodable {
     let expires_at: Date
 }
 
+struct QueueNetworkProfileRequest: Encodable {
+    let ssid: String
+    let password: String
+    let source: String
+}
+
+struct QueueNetworkProfileResponse: Decodable {
+    let status: String
+    let expires_in_seconds: Int
+}
+
 struct PairedDevice: Decodable, Identifiable {
     let device_id: String
     let device_code: String

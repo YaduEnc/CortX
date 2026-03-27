@@ -27,6 +27,8 @@ Characteristics:
 - `pair_nonce` (READ): one-time nonce generated when pairing mode starts
 - `pair_token` (WRITE): token received from backend via app
 - `pair_status` (NOTIFY): `pending|success|failed|expired`
+- `wifi_config` (WRITE): JSON `{ssid,password,persist}`
+- `wifi_status` (NOTIFY/READ): `idle|config_received|connecting|connected|saved_not_connected|connect_failed`
 
 ## Nonce rules
 - Generate fresh random nonce each pairing window.
@@ -80,4 +82,13 @@ Failure examples:
 - Retry backend call up to 3 attempts with backoff (`0.5s`, `1s`, `2s`)
 
 ## After pairing success
-- Continue normal capture flow from `docs/iot_api_integration.md`
+- App can immediately push Wi-Fi credentials over BLE `wifi_config`.
+- Device should persist credentials in NVS and retry on boot.
+- Continue normal capture flow from `docs/iot_api_integration.md`.
+
+## Backend fallback for manual Wi-Fi setup
+When app cannot keep BLE session open, it can queue a network profile in backend:
+- `POST /v1/app/devices/{device_id}/network-profile` (app JWT)
+
+Device can fetch and consume queued profile once online:
+- `POST /v1/device/network-profile/pull` (device JWT)
