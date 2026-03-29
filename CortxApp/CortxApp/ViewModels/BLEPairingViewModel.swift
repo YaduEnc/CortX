@@ -238,6 +238,14 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
                         self.failPairing("Failed to encode pairing token.")
                     }
                 }
+            } catch let apiError as APIClientError {
+                await MainActor.run {
+                    if case .unauthorized = apiError {
+                        self.failPairing("Session expired. Login again, then retry pairing.")
+                    } else {
+                        self.failPairing(apiError.localizedDescription)
+                    }
+                }
             } catch {
                 await MainActor.run {
                     self.failPairing(error.localizedDescription)
@@ -249,7 +257,7 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
     private func startStatusTimeout() {
         statusTimeoutTask?.cancel()
         statusTimeoutTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 25_000_000_000)
+            try? await Task.sleep(nanoseconds: 45_000_000_000)
             await MainActor.run {
                 guard let self, self.isBusy else { return }
                 self.failPairing("Pairing timed out. Retry pairing mode on the device.")

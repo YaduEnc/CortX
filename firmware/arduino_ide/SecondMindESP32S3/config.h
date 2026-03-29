@@ -1,19 +1,19 @@
 #pragma once
 
 // Wi-Fi
-#define WIFI_SSID "Yadu Phone"
-#define WIFI_PASSWORD "0000110000"
+#define WIFI_SSID "Vatty"
+#define WIFI_PASSWORD "jeetu123"
 
 // Backend
 // Keep NO trailing slash.
 #define API_BASE_URL "https://hamza.yaduraj.me/v1"
 
 // Device credentials (created via POST /v1/device/register)
-#define DEVICE_CODE "esp32s3-dev-01"
-#define DEVICE_SECRET "change-this-device-secret"
+#define DEVICE_CODE "manu"
+#define DEVICE_SECRET "1234567890"
 
 // Device identity visible in BLE
-#define DEVICE_BLE_NAME "SecondMind-ESP32S3-01"
+#define DEVICE_BLE_NAME "SecondMind"
 
 // GPIO
 // Set to -1 to disable hardware pairing button in testing.

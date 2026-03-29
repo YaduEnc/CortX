@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_current_device
@@ -16,11 +16,11 @@ from app.schemas.capture import (
     TranscriptResponse,
     TranscriptSegmentResponse,
 )
+from app.services.audio import pcm_chunks_to_wav
 from app.services.storage import get_storage
 from app.utils.crc import crc32_hex
 from app.utils.time import utc_now
 from app.core.config import get_settings
-from app.workers.celery_app import celery_app
 
 router = APIRouter(prefix="/capture", tags=["capture"])
 settings = get_settings()
@@ -161,18 +161,33 @@ def finalize_session(
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
-    if session.status in {SessionStatus.queued.value, SessionStatus.transcribing.value, SessionStatus.done.value}:
+    if session.status == SessionStatus.done.value:
         return SessionFinalizeResponse(session_id=session.id, status=session.status)
 
-    chunk_count = db.scalar(select(func.count(AudioChunk.id)).where(AudioChunk.session_id == session.id))
-    if chunk_count == 0:
+    chunks = db.scalars(
+        select(AudioChunk).where(AudioChunk.session_id == session.id).order_by(AudioChunk.chunk_index.asc())
+    ).all()
+    if not chunks:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot finalize empty session")
 
-    session.status = SessionStatus.queued.value
+    storage = get_storage()
+    chunk_bytes = [storage.get_bytes(chunk.object_key) for chunk in chunks]
+    wav_bytes = pcm_chunks_to_wav(
+        chunk_bytes=chunk_bytes,
+        sample_rate=session.sample_rate,
+        channels=session.channels,
+        sample_width_bytes=2,
+    )
+
+    assembled_key = f"assembled/{session.id}/full.wav"
+    storage.put_bytes(assembled_key, wav_bytes, content_type="audio/wav")
+
+    session.assembled_object_key = assembled_key
+    session.total_chunks = len(chunks)
+    session.status = SessionStatus.done.value
+    session.error_message = None
     session.finalized_at = utc_now()
     db.commit()
-
-    celery_app.send_task("app.workers.tasks.process_session_transcription", args=[session.id])
 
     return SessionFinalizeResponse(session_id=session.id, status=session.status)
 

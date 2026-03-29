@@ -9,7 +9,7 @@ Bind one hardware device to one app user securely before audio upload starts.
 1. Device enters pairing mode.
 Testing option: auto-enter on power-on.
 Production option: long-press physical button (5s).
-2. Device advertises BLE pairing service for 120s.
+2. Device advertises BLE pairing service for 300s.
 3. App reads `device_code` and `pair_nonce` over BLE.
 4. App calls backend `POST /v1/pairing/start` with app bearer token.
 5. Backend returns short-lived `pair_token`.
@@ -70,7 +70,7 @@ Failure examples:
 - `409 Device already paired with another user`
 
 ## ESP32 implementation checklist
-- Pairing mode timeout: 120s
+- Pairing mode timeout: 300s
 - For bench testing without button: auto-pair on boot
 - Auto-exit pairing mode on success/failure/timeout
 - Clear `pair_token` buffer from RAM after request

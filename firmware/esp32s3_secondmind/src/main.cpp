@@ -23,8 +23,9 @@ static const char *PAIR_STATUS_CHAR_UUID = "ea85f9b1-1c57-4fdd-95ac-5c92b8a07b3d
 static const char *WIFI_CONFIG_CHAR_UUID = "f9eb1c79-9c16-4bc3-bd03-563a72fce6c0";
 static const char *WIFI_STATUS_CHAR_UUID = "ac29d4a8-6d7f-4b91-9d9e-66e2b0fd5e61";
 
-static const uint32_t PAIR_MODE_WINDOW_MS = 120000;
+static const uint32_t PAIR_MODE_WINDOW_MS = 300000;
 static const uint32_t LONG_PRESS_MS = 5000;
+static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 30000;
 
 static BLEServer *g_bleServer = nullptr;
 static BLEService *g_pairService = nullptr;
@@ -53,6 +54,7 @@ static uint32_t g_buttonPressedAt = 0;
 static bool g_buttonWasDown = false;
 
 static bool g_captureRequested = false;
+static volatile bool g_wifiConnectInProgress = false;
 
 constexpr i2s_port_t I2S_PORT = I2S_NUM_0;
 constexpr size_t CHUNK_BYTES = (SAMPLE_RATE_HZ * CHUNK_DURATION_MS / 1000) * (SAMPLE_BITS / 8) * CHANNELS;
@@ -133,21 +135,34 @@ bool connectToWifi(const String &ssid, const String &password) {
     return false;
   }
 
+  if (g_wifiConnectInProgress) {
+    Serial.println("[WIFI] Connection already in progress; skipping duplicate request");
+    return false;
+  }
+
   if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == ssid) {
     return true;
   }
 
-  if (WiFi.status() == WL_CONNECTED) {
-    WiFi.disconnect(true, false);
-    delay(250);
-  }
+  g_wifiConnectInProgress = true;
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(false);
+
+  // Always clear any previous in-progress connection attempt before applying new config.
+  WiFi.disconnect(true, true);
+  delay(350);
 
   Serial.printf("[WIFI] Connecting to %s\n", ssid.c_str());
-  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid.c_str(), password.c_str());
 
   uint32_t started = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - started < 30000) {
+  while (WiFi.status() != WL_CONNECTED && millis() - started < WIFI_CONNECT_TIMEOUT_MS) {
+    wl_status_t st = WiFi.status();
+    if (st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL || st == WL_CONNECTION_LOST) {
+      break;
+    }
     delay(250);
     Serial.print('.');
   }
@@ -155,10 +170,12 @@ bool connectToWifi(const String &ssid, const String &password) {
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[WIFI] Failed to connect");
+    g_wifiConnectInProgress = false;
     return false;
   }
 
   Serial.printf("[WIFI] Connected, IP=%s\n", WiFi.localIP().toString().c_str());
+  g_wifiConnectInProgress = false;
   return true;
 }
 
@@ -298,6 +315,17 @@ void exitPairingMode(const String &finalStatus) {
 }
 
 bool ensureWifiConnected() {
+  if (g_wifiConnectInProgress) {
+    uint32_t waitStarted = millis();
+    while (g_wifiConnectInProgress && millis() - waitStarted < WIFI_CONNECT_TIMEOUT_MS + 2000) {
+      delay(50);
+    }
+  }
+
+  if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == g_wifiSsid) {
+    return true;
+  }
+
   return connectToWifi(g_wifiSsid, g_wifiPassword);
 }
 
@@ -659,6 +687,10 @@ bool runCaptureSession() {
 
 void handleWifiProvisioningState() {
   if (!g_wifiConfigReady) {
+    return;
+  }
+
+  if (g_wifiConnectInProgress) {
     return;
   }
 

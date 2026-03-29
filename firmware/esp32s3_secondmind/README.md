@@ -40,6 +40,8 @@ pio device monitor
 6. ESP32 calls `POST /v1/device/pairing/complete`.
 7. Pair status notifies over BLE.
 
+Pairing mode window in current firmware is 300 seconds.
+
 ## 4) Capture test
 - Serial command `r` runs one capture session:
   - `POST /v1/capture/sessions`

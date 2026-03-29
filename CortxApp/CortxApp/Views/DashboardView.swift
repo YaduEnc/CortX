@@ -213,18 +213,12 @@ struct DashboardView: View {
                             .disabled(!capture.isPlayable || loadingAudioSessionID != nil)
 
                             Button {
-                                Task {
-                                    await viewTranscript(capture)
-                                }
+                                // Transcript flow is intentionally disabled in audio-only phase.
                             } label: {
-                                if loadingTranscriptSessionID == capture.id {
-                                    ProgressView()
-                                } else {
-                                    Label("Transcript", systemImage: "text.bubble")
-                                }
+                                Label("Transcript Soon", systemImage: "text.bubble")
                             }
                             .buttonStyle(LiquidSecondaryButtonStyle())
-                            .disabled(loadingTranscriptSessionID != nil)
+                            .disabled(true)
                         }
                     }
                     .padding(.vertical, 5)

@@ -3,18 +3,16 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <ESP_I2S.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <Preferences.h>
-#include <driver/i2s.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
-#include <vector>
 
 
-// Wi-Fi
 #define WIFI_SSID "Yadu Phone"
 #define WIFI_PASSWORD "0000110000"
 
@@ -22,12 +20,12 @@
 // Keep NO trailing slash.
 #define API_BASE_URL "https://hamza.yaduraj.me/v1"
 
-// Device credentials (created via POST /v1/device/register)
-#define DEVICE_CODE "esp32s3-dev-01"
-#define DEVICE_SECRET "change-this-device-secret"
 
-// Device identity visible in BLE
-#define DEVICE_BLE_NAME "SecondMind-ESP32S3-01"
+#define DEVICE_CODE "manu"
+#define DEVICE_SECRET "1234567890"
+
+
+#define DEVICE_BLE_NAME "SecondMind"
 
 // GPIO
 // Set to -1 to disable hardware pairing button in testing.
@@ -49,7 +47,8 @@
 #define SAMPLE_RATE_HZ 16000
 #define SAMPLE_BITS 16
 #define CHANNELS 1
-#define CHUNK_DURATION_MS 2000
+// 1s chunk keeps RAM use stable on ESP32-S3 while still low latency.
+#define CHUNK_DURATION_MS 1000
 #define CAPTURE_CHUNKS_PER_SESSION 3
 
 // Testing mode
@@ -63,8 +62,9 @@ static const char *PAIR_NONCE_CHAR_UUID = "2dc45f2c-5924-48cf-a615-f9e3c1070ad4"
 static const char *PAIR_TOKEN_CHAR_UUID = "9f8b48ad-e983-4abf-8b56-53f31c0f7596";
 static const char *PAIR_STATUS_CHAR_UUID = "ea85f9b1-1c57-4fdd-95ac-5c92b8a07b3d";
 
-static const uint32_t PAIR_MODE_WINDOW_MS = 120000;
+static const uint32_t PAIR_MODE_WINDOW_MS = 300000;
 static const uint32_t LONG_PRESS_MS = 5000;
+static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 30000;
 
 static BLEServer *g_bleServer = nullptr;
 static BLEService *g_pairService = nullptr;
@@ -87,9 +87,15 @@ static uint32_t g_buttonPressedAt = 0;
 static bool g_buttonWasDown = false;
 
 static bool g_captureRequested = false;
+static volatile bool g_wifiConnectInProgress = false;
+static bool g_recordingActive = false;
+static String g_liveSessionId = "";
+static int g_liveChunkIndex = 0;
+static uint32_t g_liveChunkStartMs = 0;
+static volatile bool g_stopRecordingRequested = false;
 
-constexpr i2s_port_t I2S_PORT = I2S_NUM_0;
 constexpr size_t CHUNK_BYTES = (SAMPLE_RATE_HZ * CHUNK_DURATION_MS / 1000) * (SAMPLE_BITS / 8) * CHANNELS;
+static I2SClass g_i2s;
 
 String apiUrl(const String &path) {
   return String(API_BASE_URL) + path;
@@ -119,7 +125,7 @@ uint32_t crc32(const uint8_t *data, size_t len) {
 }
 
 String toHex8(uint32_t value) {
-  char buf[9] = {0};
+  char buf[9] = { 0 };
   snprintf(buf, sizeof(buf), "%08x", value);
   return String(buf);
 }
@@ -153,21 +159,21 @@ void setupBle() {
   g_pairService = g_bleServer->createService(PAIR_SERVICE_UUID);
 
   g_deviceInfoChar = g_pairService->createCharacteristic(
-      DEVICE_INFO_CHAR_UUID,
-      BLECharacteristic::PROPERTY_READ);
+    DEVICE_INFO_CHAR_UUID,
+    BLECharacteristic::PROPERTY_READ);
 
   g_pairNonceChar = g_pairService->createCharacteristic(
-      PAIR_NONCE_CHAR_UUID,
-      BLECharacteristic::PROPERTY_READ);
+    PAIR_NONCE_CHAR_UUID,
+    BLECharacteristic::PROPERTY_READ);
 
   g_pairTokenChar = g_pairService->createCharacteristic(
-      PAIR_TOKEN_CHAR_UUID,
-      BLECharacteristic::PROPERTY_WRITE);
+    PAIR_TOKEN_CHAR_UUID,
+    BLECharacteristic::PROPERTY_WRITE);
   g_pairTokenChar->setCallbacks(new PairTokenCallbacks());
 
   g_pairStatusChar = g_pairService->createCharacteristic(
-      PAIR_STATUS_CHAR_UUID,
-      BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
+    PAIR_STATUS_CHAR_UUID,
+    BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
   g_pairStatusChar->addDescriptor(new BLE2902());
 
   StaticJsonDocument<160> infoDoc;
@@ -212,16 +218,39 @@ void exitPairingMode(const String &finalStatus) {
 }
 
 bool ensureWifiConnected() {
-  if (WiFi.status() == WL_CONNECTED) {
+  if (g_wifiConnectInProgress) {
+    uint32_t waitStarted = millis();
+    while (g_wifiConnectInProgress && millis() - waitStarted < WIFI_CONNECT_TIMEOUT_MS + 2000) {
+      delay(50);
+    }
+  }
+
+  if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == String(WIFI_SSID)) {
     return true;
   }
 
-  Serial.printf("[WIFI] Connecting to %s\n", WIFI_SSID);
+  if (g_wifiConnectInProgress) {
+    Serial.println("[WIFI] Connection already in progress; skipping duplicate request");
+    return false;
+  }
+
+  g_wifiConnectInProgress = true;
+
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(false);
+  WiFi.disconnect(true, true);
+  delay(350);
+
+  Serial.printf("[WIFI] Connecting to %s\n", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   uint32_t started = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - started < 30000) {
+  while (WiFi.status() != WL_CONNECTED && millis() - started < WIFI_CONNECT_TIMEOUT_MS) {
+    wl_status_t st = WiFi.status();
+    if (st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL || st == WL_CONNECTION_LOST) {
+      break;
+    }
     delay(250);
     Serial.print('.');
   }
@@ -229,10 +258,12 @@ bool ensureWifiConnected() {
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[WIFI] Failed to connect");
+    g_wifiConnectInProgress = false;
     return false;
   }
 
   Serial.printf("[WIFI] Connected, IP=%s\n", WiFi.localIP().toString().c_str());
+  g_wifiConnectInProgress = false;
   return true;
 }
 
@@ -404,17 +435,31 @@ bool uploadChunkMultipart(const String &sessionId,
 
   String post = "\r\n--" + boundary + "--\r\n";
 
-  std::vector<uint8_t> body;
-  body.resize(pre.length() + audioLen + post.length());
-  memcpy(body.data(), pre.c_str(), pre.length());
-  memcpy(body.data() + pre.length(), audio, audioLen);
-  memcpy(body.data() + pre.length() + audioLen, post.c_str(), post.length());
+  size_t bodyLen = pre.length() + audioLen + post.length();
+  uint8_t *body = nullptr;
+#ifdef MALLOC_CAP_SPIRAM
+  body = static_cast<uint8_t *>(heap_caps_malloc(bodyLen, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#endif
+  if (!body) {
+    body = static_cast<uint8_t *>(malloc(bodyLen));
+  }
+  if (!body) {
+    Serial.printf("[CAPTURE] multipart alloc failed bytes=%u\n", static_cast<unsigned>(bodyLen));
+    http.end();
+    return false;
+  }
+
+  memcpy(body, pre.c_str(), pre.length());
+  memcpy(body + pre.length(), audio, audioLen);
+  memcpy(body + pre.length() + audioLen, post.c_str(), post.length());
 
   http.addHeader("Authorization", "Bearer " + g_deviceJwt);
   http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
 
-  int code = http.POST(body.data(), body.size());
+  int code = http.POST(body, bodyLen);
   String response = http.getString();
+
+  free(body);
   http.end();
 
   if (code != 200) {
@@ -443,62 +488,80 @@ bool finalizeSession(const String &sessionId) {
 }
 
 bool initI2S() {
-  i2s_config_t i2sConfig = {};
-  i2sConfig.mode = static_cast<i2s_mode_t>(I2S_MODE_MASTER | I2S_MODE_RX);
+  g_i2s.end();
 #if MIC_MODE_PDM
-  i2sConfig.mode = static_cast<i2s_mode_t>(i2sConfig.mode | I2S_MODE_PDM);
-#endif
-  i2sConfig.sample_rate = SAMPLE_RATE_HZ;
-  i2sConfig.bits_per_sample = static_cast<i2s_bits_per_sample_t>(SAMPLE_BITS);
-  i2sConfig.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
-  i2sConfig.communication_format = I2S_COMM_FORMAT_STAND_I2S;
-  i2sConfig.intr_alloc_flags = 0;
-  i2sConfig.dma_buf_count = 8;
-  i2sConfig.dma_buf_len = 512;
-  i2sConfig.use_apll = false;
-  i2sConfig.tx_desc_auto_clear = false;
-  i2sConfig.fixed_mclk = 0;
-#ifdef I2S_MCLK_MULTIPLE_DEFAULT
-  i2sConfig.mclk_multiple = I2S_MCLK_MULTIPLE_DEFAULT;
-#endif
-#ifdef I2S_BITS_PER_CHAN_DEFAULT
-  i2sConfig.bits_per_chan = I2S_BITS_PER_CHAN_DEFAULT;
-#endif
-
-  i2s_pin_config_t pinConfig = {
-      .bck_io_num = (I2S_BCLK_PIN >= 0) ? I2S_BCLK_PIN : I2S_PIN_NO_CHANGE,
-      .ws_io_num = (I2S_WS_PIN >= 0) ? I2S_WS_PIN : I2S_PIN_NO_CHANGE,
-      .data_out_num = I2S_PIN_NO_CHANGE,
-      .data_in_num = (I2S_DATA_IN_PIN >= 0) ? I2S_DATA_IN_PIN : I2S_PIN_NO_CHANGE,
-  };
-
-  if (i2s_driver_install(I2S_PORT, &i2sConfig, 0, nullptr) != ESP_OK) {
-    Serial.println("[I2S] driver install failed");
+  g_i2s.setPinsPdmRx(I2S_WS_PIN, I2S_DATA_IN_PIN);
+  if (!g_i2s.begin(I2S_MODE_PDM_RX, SAMPLE_RATE_HZ, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO)) {
+    Serial.println("[I2S] begin PDM RX failed");
     return false;
   }
-
-  if (i2s_set_pin(I2S_PORT, &pinConfig) != ESP_OK) {
-    Serial.println("[I2S] set pin failed");
+#else
+  g_i2s.setPins(I2S_BCLK_PIN, I2S_WS_PIN, -1, I2S_DATA_IN_PIN, -1);
+  if (!g_i2s.begin(I2S_MODE_STD, SAMPLE_RATE_HZ, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO)) {
+    Serial.println("[I2S] begin STD RX failed");
     return false;
   }
+#endif
 
-  i2s_zero_dma_buffer(I2S_PORT);
   Serial.println("[I2S] initialized");
   return true;
 }
 
-bool readPcmChunk(uint8_t *out, size_t expectedBytes) {
+bool readPcmChunk(uint8_t *out, size_t expectedBytes, bool allowStopRequest = false) {
   size_t total = 0;
+  int idleReads = 0;
   while (total < expectedBytes) {
-    size_t bytesRead = 0;
-    esp_err_t err = i2s_read(I2S_PORT, out + total, expectedBytes - total, &bytesRead, pdMS_TO_TICKS(2000));
-    if (err != ESP_OK) {
-      Serial.printf("[I2S] read error=%d\n", static_cast<int>(err));
+    if (allowStopRequest && g_stopRecordingRequested) {
       return false;
     }
+
+    int availableBytes = g_i2s.available();
+    if (availableBytes <= 0) {
+      idleReads++;
+      if (idleReads >= 100) {
+        Serial.println("[I2S] no mic data / read timeout (check Sense mic board seating + GPIO42 CLK, GPIO41 DATA)");
+        return false;
+      }
+      delay(10);
+      continue;
+    }
+
+    size_t maxWanted = expectedBytes - total;
+    size_t wanted = static_cast<size_t>(availableBytes);
+    if (wanted > maxWanted) {
+      wanted = maxWanted;
+    }
+
+    size_t bytesRead = g_i2s.readBytes(reinterpret_cast<char *>(out + total), wanted);
+    if (bytesRead == 0) {
+      idleReads++;
+      if (idleReads >= 25) {
+        Serial.println("[I2S] no mic data / read timeout (check Sense mic board seating + GPIO42 CLK, GPIO41 DATA)");
+        return false;
+      }
+      delay(1);
+      continue;
+    }
+
+    idleReads = 0;
     total += bytesRead;
   }
   return true;
+}
+
+uint8_t *allocateI2SReadBuffer(size_t bytes) {
+  uint8_t *buf = nullptr;
+#ifdef MALLOC_CAP_DMA
+  buf = static_cast<uint8_t *>(heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (buf) {
+    return buf;
+  }
+#endif
+  buf = static_cast<uint8_t *>(heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (buf) {
+    return buf;
+  }
+  return static_cast<uint8_t *>(malloc(bytes));
 }
 
 bool runCaptureSession() {
@@ -521,14 +584,9 @@ bool runCaptureSession() {
 
   static uint8_t *chunkBuffer = nullptr;
   if (!chunkBuffer) {
-#ifdef MALLOC_CAP_SPIRAM
-    chunkBuffer = static_cast<uint8_t *>(heap_caps_malloc(CHUNK_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-#endif
+    chunkBuffer = allocateI2SReadBuffer(CHUNK_BYTES);
     if (!chunkBuffer) {
-      chunkBuffer = static_cast<uint8_t *>(malloc(CHUNK_BYTES));
-    }
-    if (!chunkBuffer) {
-      Serial.println("[CAPTURE] chunk buffer alloc failed");
+      Serial.println("[CAPTURE] chunk buffer alloc failed (try reducing CHUNK_DURATION_MS)");
       return false;
     }
   }
@@ -548,6 +606,137 @@ bool runCaptureSession() {
   }
 
   return finalizeSession(sessionId);
+}
+
+bool startLiveRecording() {
+  if (g_recordingActive) {
+    Serial.println("[REC] already recording");
+    return true;
+  }
+
+  if (!g_isPaired) {
+    Serial.println("[REC] device not paired");
+    return false;
+  }
+
+  if (!ensureWifiConnected()) {
+    Serial.println("[REC] Wi-Fi not connected");
+    return false;
+  }
+
+  if (g_deviceJwt.isEmpty() && !authDevice()) {
+    Serial.println("[REC] device auth failed");
+    return false;
+  }
+
+  String sessionId;
+  if (!createCaptureSession(sessionId)) {
+    Serial.println("[REC] create session failed");
+    return false;
+  }
+
+  g_liveSessionId = sessionId;
+  g_liveChunkIndex = 0;
+  g_liveChunkStartMs = 0;
+  g_recordingActive = true;
+
+  Serial.printf("[REC] started session=%s chunk_ms=%d\n", g_liveSessionId.c_str(), CHUNK_DURATION_MS);
+  return true;
+}
+
+void stopLiveRecording(bool dueToError = false) {
+  if (!g_recordingActive) {
+    Serial.println("[REC] not recording");
+    return;
+  }
+
+  if (dueToError) {
+    Serial.printf("[REC] stopped due to error, session=%s\n", g_liveSessionId.c_str());
+    g_recordingActive = false;
+    g_liveSessionId = "";
+    g_liveChunkIndex = 0;
+    g_liveChunkStartMs = 0;
+    return;
+  }
+
+  if (!finalizeSession(g_liveSessionId)) {
+    Serial.println("[REC] finalize failed");
+  } else {
+    Serial.printf("[REC] stopped + finalized session=%s total_chunks=%d\n",
+                  g_liveSessionId.c_str(),
+                  g_liveChunkIndex);
+  }
+
+  g_recordingActive = false;
+  g_liveSessionId = "";
+  g_liveChunkIndex = 0;
+  g_liveChunkStartMs = 0;
+}
+
+bool processLiveRecordingChunk() {
+  if (!g_recordingActive) {
+    return true;
+  }
+
+  if (g_stopRecordingRequested) {
+    g_stopRecordingRequested = false;
+    stopLiveRecording(false);
+    return true;
+  }
+
+  static uint8_t *chunkBuffer = nullptr;
+  if (!chunkBuffer) {
+    chunkBuffer = allocateI2SReadBuffer(CHUNK_BYTES);
+    if (!chunkBuffer) {
+      Serial.println("[REC] chunk buffer alloc failed (try reducing CHUNK_DURATION_MS)");
+      return false;
+    }
+  }
+
+  if (!ensureWifiConnected()) {
+    Serial.println("[REC] Wi-Fi dropped");
+    return false;
+  }
+
+  if (g_deviceJwt.isEmpty() && !authDevice()) {
+    Serial.println("[REC] auth failed");
+    return false;
+  }
+
+  if (!readPcmChunk(chunkBuffer, CHUNK_BYTES, true)) {
+    if (g_stopRecordingRequested) {
+      g_stopRecordingRequested = false;
+      stopLiveRecording(false);
+      return true;
+    }
+    Serial.println("[REC] audio read failed");
+    return false;
+  }
+
+  uint32_t chunkEndMs = g_liveChunkStartMs + CHUNK_DURATION_MS;
+  bool ok = uploadChunkMultipart(
+    g_liveSessionId,
+    g_liveChunkIndex,
+    g_liveChunkStartMs,
+    chunkEndMs,
+    chunkBuffer,
+    CHUNK_BYTES
+  );
+
+  if (!ok) {
+    if (g_stopRecordingRequested) {
+      g_stopRecordingRequested = false;
+      stopLiveRecording(false);
+      return true;
+    }
+    Serial.printf("[REC] upload failed chunk=%d\n", g_liveChunkIndex);
+    return false;
+  }
+
+  Serial.printf("[REC] uploaded chunk=%d ms=%u-%u\n", g_liveChunkIndex, g_liveChunkStartMs, chunkEndMs);
+  g_liveChunkIndex++;
+  g_liveChunkStartMs = chunkEndMs;
+  return true;
 }
 
 void handlePairButton() {
@@ -589,7 +778,7 @@ void handlePairingState() {
 
     if (completePairingWithBackend(g_pairTokenFromApp)) {
       exitPairingMode("success");
-      g_captureRequested = true;
+      Serial.println("[PAIR] Pair complete. Use 's' to start live recording.");
     } else {
       setPairStatus("failed");
     }
@@ -600,8 +789,11 @@ void printSerialHelp() {
   Serial.println("\n=== SecondMind ESP32 Commands ===");
   Serial.println("p : enter pairing mode");
   Serial.println("r : run one capture session now");
+  Serial.println("s : start live recording (continuous upload)");
+  Serial.println("t : stop live recording and finalize session");
   Serial.println("u : re-auth device");
   Serial.println("x : clear paired flag");
+  Serial.println("h : show this help");
   Serial.println("=================================\n");
 }
 
@@ -612,12 +804,23 @@ void handleSerialCommands() {
       enterPairingMode();
     } else if (c == 'r') {
       g_captureRequested = true;
+    } else if (c == 's') {
+      startLiveRecording();
+    } else if (c == 't') {
+      if (g_recordingActive) {
+        g_stopRecordingRequested = true;
+        Serial.println("[REC] stop requested");
+      } else {
+        stopLiveRecording(false);
+      }
     } else if (c == 'u') {
       authDevice();
     } else if (c == 'x') {
       g_isPaired = false;
       g_prefs.putBool("paired", false);
       Serial.println("[PAIR] paired flag cleared");
+    } else if (c == 'h') {
+      printSerialHelp();
     }
   }
 }
@@ -662,6 +865,12 @@ void loop() {
     g_captureRequested = false;
     if (!runCaptureSession()) {
       Serial.println("[CAPTURE] session failed");
+    }
+  }
+
+  if (g_recordingActive) {
+    if (!processLiveRecordingChunk()) {
+      stopLiveRecording(true);
     }
   }
 
