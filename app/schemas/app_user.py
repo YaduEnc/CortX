@@ -45,3 +45,23 @@ class AppCaptureTranscriptResponse(BaseModel):
     language: str | None
     full_text: str
     duration_seconds: float | None
+
+
+class AppLiveStreamStartRequest(BaseModel):
+    device_code: str = Field(min_length=3, max_length=128)
+    sample_rate: int = Field(default=8000, ge=8000, le=48000)
+    channels: int = Field(default=1, ge=1, le=2)
+    codec: str = Field(default="pcm16le", min_length=3, max_length=32)
+    frame_duration_ms: int = Field(default=500, ge=100, le=2000)
+
+
+class AppLiveStreamStartResponse(BaseModel):
+    session_id: str
+    stream_token: str
+    ws_url: str
+    status: str
+    sample_rate: int
+    channels: int
+    codec: str
+    frame_duration_ms: int
+    expires_at: datetime

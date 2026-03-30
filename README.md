@@ -1,6 +1,6 @@
-# SecondMind Backend (Phase 1)
+# SecondMind Backend (BLE Phone Gateway)
 
-Production-oriented backend foundation for audio capture from ESP32 devices, local transcription with Whisper, and transcript retrieval APIs.
+Production-oriented backend + app gateway foundation for BLE audio capture from ESP32 devices and cloud storage via iOS uplink.
 
 ## Tech Stack
 - FastAPI (API)
@@ -11,12 +11,12 @@ Production-oriented backend foundation for audio capture from ESP32 devices, loc
 - Docker Compose (local/staging runtime)
 
 ## Architecture
-1. ESP32 authenticates and receives JWT.
-2. ESP32 creates a capture session.
-3. ESP32 uploads sequential audio chunks (`pcm16le`, 16kHz recommended).
-4. Device finalizes session.
-5. Worker assembles chunks, runs local Whisper, stores transcript.
-6. App/clients fetch session status and transcript.
+1. ESP32 pairs with user (BLE + backend claim flow).
+2. ESP32 streams audio packets to iOS over BLE.
+3. iOS app starts cloud live stream (`/v1/app/live/start`).
+4. iOS app forwards framed PCM over `/v1/stream/ws`.
+5. Backend assembles audio and stores final WAV.
+6. App fetches captures and plays audio.
 
 ## Quick Start
 1. Create env file:
@@ -37,20 +37,20 @@ http://localhost:8000/v1
 - `POST /v1/app/register`
 - `POST /v1/app/auth`
 - `GET /v1/app/devices`
+- `POST /v1/app/live/start`
+- `GET /v1/app/captures`
+- `GET /v1/app/captures/{session_id}/audio`
+- `GET /v1/app/captures/{session_id}/transcript`
 - `POST /v1/device/register` (requires `X-Admin-Key`)
 - `POST /v1/device/auth`
 - `POST /v1/pairing/start`
 - `POST /v1/device/pairing/complete`
-- `POST /v1/capture/sessions`
-- `POST /v1/capture/chunks`
-- `POST /v1/capture/sessions/{session_id}/finalize`
-- `GET /v1/capture/sessions/{session_id}`
-- `GET /v1/capture/sessions/{session_id}/transcript`
+- `GET /v1/stream/ws?stream_token=...` (websocket)
 
 ## IoT Team Guide
 Detailed integration contract is documented at:
-- `docs/iot_api_integration.md`
 - `docs/iot_pairing_guide.md`
+- `docs/ble_phone_gateway_flow.md`
 
 ## App Team Guide
 - `docs/app_pairing_api_flow.md`
@@ -59,7 +59,7 @@ Detailed integration contract is documented at:
 - `docs/cloudflare_tunnel_deploy_hamza.md`
 
 ## Firmware Reference
-- `firmware/esp32s3_secondmind/README.md`
+- `firmware/arduino_ide/SecondMindESP32S3/README_ARDUINO.md`
 
 ## Notes
 - Raw audio is stored in object storage, not PostgreSQL.

@@ -48,16 +48,6 @@
 			path = CortxApp;
 			sourceTree = "<group>";
 		};
-		903F4E742F757F3F00A5F2F0 /* CortxAppTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = CortxAppTests;
-			sourceTree = "<group>";
-		};
-		903F4E7E2F757F3F00A5F2F0 /* CortxAppUITests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = CortxAppUITests;
-			sourceTree = "<group>";
-		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -89,8 +79,6 @@
 			isa = PBXGroup;
 			children = (
 				903F4E662F757F3E00A5F2F0 /* CortxApp */,
-				903F4E742F757F3F00A5F2F0 /* CortxAppTests */,
-				903F4E7E2F757F3F00A5F2F0 /* CortxAppUITests */,
 				903F4E652F757F3E00A5F2F0 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -143,9 +131,6 @@
 			dependencies = (
 				903F4E732F757F3F00A5F2F0 /* PBXTargetDependency */,
 			);
-			fileSystemSynchronizedGroups = (
-				903F4E742F757F3F00A5F2F0 /* CortxAppTests */,
-			);
 			name = CortxAppTests;
 			packageProductDependencies = (
 			);
@@ -165,9 +150,6 @@
 			);
 			dependencies = (
 				903F4E7D2F757F3F00A5F2F0 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				903F4E7E2F757F3F00A5F2F0 /* CortxAppUITests */,
 			);
 			name = CortxAppUITests;
 			packageProductDependencies = (

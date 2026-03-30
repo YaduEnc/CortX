@@ -78,6 +78,26 @@ struct AppCaptureTranscript: Decodable {
     let duration_seconds: Double?
 }
 
+struct AppLiveStreamStartRequest: Encodable {
+    let device_code: String
+    let sample_rate: Int
+    let channels: Int
+    let codec: String
+    let frame_duration_ms: Int
+}
+
+struct AppLiveStreamStartResponse: Decodable {
+    let session_id: String
+    let stream_token: String
+    let ws_url: String
+    let status: String
+    let sample_rate: Int
+    let channels: Int
+    let codec: String
+    let frame_duration_ms: Int
+    let expires_at: Date
+}
+
 enum PairingStatus: String {
     case idle
     case pairing_mode

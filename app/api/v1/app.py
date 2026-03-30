@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -5,7 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_app_user
 from app.core.config import get_settings
-from app.core.security import create_app_access_token, hash_secret, verify_secret
+from app.core.security import create_app_access_token, create_stream_access_token, hash_secret, verify_secret
 from app.db.session import get_db
 from app.models.capture import CaptureSession, SessionStatus
 from app.models.app_user import AppUser
@@ -16,6 +18,8 @@ from app.services.network_profiles import NETWORK_PROFILE_TTL_SECONDS, queue_net
 from app.services.storage import get_storage
 from app.schemas.app_user import (
     AppCaptureListItemResponse,
+    AppLiveStreamStartRequest,
+    AppLiveStreamStartResponse,
     AppCaptureTranscriptResponse,
     AppAuthRequest,
     AppRegisterRequest,
@@ -79,6 +83,66 @@ def list_user_devices(
         )
         for binding, device in rows
     ]
+
+
+@router.post("/live/start", response_model=AppLiveStreamStartResponse, status_code=status.HTTP_201_CREATED)
+def start_live_stream_for_app(
+    payload: AppLiveStreamStartRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppLiveStreamStartResponse:
+    codec = payload.codec.lower().strip()
+    if codec != "pcm16le":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only pcm16le codec is supported")
+
+    device = db.scalar(
+        select(Device)
+        .join(
+            DeviceUserBinding,
+            (DeviceUserBinding.device_id == Device.id)
+            & (DeviceUserBinding.user_id == user.id)
+            & (DeviceUserBinding.is_active.is_(True)),
+        )
+        .where(Device.device_code == payload.device_code.strip())
+    )
+    if not device:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paired device not found for this user")
+
+    session = CaptureSession(
+        device_id=device.id,
+        sample_rate=payload.sample_rate,
+        channels=payload.channels,
+        codec=codec,
+        status=SessionStatus.receiving.value,
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+
+    settings = get_settings()
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=settings.stream_token_ttl_seconds)
+    stream_token = create_stream_access_token(
+        session_id=session.id,
+        device_id=device.id,
+        sample_rate=payload.sample_rate,
+        channels=payload.channels,
+        codec=codec,
+        frame_duration_ms=payload.frame_duration_ms,
+        ttl_seconds=settings.stream_token_ttl_seconds,
+    )
+    ws_url = f"/v1/stream/ws?stream_token={stream_token}"
+
+    return AppLiveStreamStartResponse(
+        session_id=session.id,
+        stream_token=stream_token,
+        ws_url=ws_url,
+        status=session.status,
+        sample_rate=payload.sample_rate,
+        channels=payload.channels,
+        codec=codec,
+        frame_duration_ms=payload.frame_duration_ms,
+        expires_at=expires_at,
+    )
 
 
 @router.post("/devices/{device_id}/network-profile", response_model=AppQueueNetworkProfileResponse)

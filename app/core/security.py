@@ -57,6 +57,48 @@ def decode_access_token(token: str) -> str | None:
     return decode_token_subject(token, "device")
 
 
+def create_stream_access_token(
+    *,
+    session_id: str,
+    device_id: str,
+    sample_rate: int,
+    channels: int,
+    codec: str,
+    frame_duration_ms: int,
+    ttl_seconds: int,
+) -> str:
+    settings = get_settings()
+    expire_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+    payload = {
+        "sub": session_id,
+        "typ": "stream",
+        "did": device_id,
+        "sr": sample_rate,
+        "ch": channels,
+        "cdc": codec,
+        "fms": frame_duration_ms,
+        "exp": expire_at,
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def decode_stream_access_token(token: str) -> dict | None:
+    settings = get_settings()
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    except JWTError:
+        return None
+
+    if payload.get("typ") != "stream":
+        return None
+
+    required_fields = ("sub", "did", "sr", "ch", "cdc", "fms")
+    if any(payload.get(field) is None for field in required_fields):
+        return None
+
+    return payload
+
+
 def hash_pair_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 

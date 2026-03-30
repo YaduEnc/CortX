@@ -9,9 +9,16 @@ final class AudioPlaybackManager: NSObject, ObservableObject, AVAudioPlayerDeleg
 
     private var player: AVAudioPlayer?
 
+    private func configureAudioSession() throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playback, mode: .default, options: [])
+        try session.setActive(true, options: [])
+    }
+
     func play(sessionID: String, wavData: Data) {
         stop()
         do {
+            try configureAudioSession()
             let player = try AVAudioPlayer(data: wavData)
             player.delegate = self
             player.prepareToPlay()
@@ -33,6 +40,7 @@ final class AudioPlaybackManager: NSObject, ObservableObject, AVAudioPlayerDeleg
         player = nil
         activeSessionID = nil
         isPlaying = false
+        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {

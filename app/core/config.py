@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     whisper_device: str = "cpu"
 
     max_chunk_bytes: int = 256000
+    stream_token_ttl_seconds: int = 900
+    stream_max_frame_bytes: int = 32768
 
 
 @lru_cache(maxsize=1)

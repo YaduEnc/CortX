@@ -97,6 +97,24 @@ final class APIClient {
         )
     }
 
+    func startAppLiveStream(
+        deviceCode: String,
+        sampleRate: Int = 8000,
+        channels: Int = 1,
+        codec: String = "pcm16le",
+        frameDurationMs: Int = 500,
+        accessToken: String
+    ) async throws -> AppLiveStreamStartResponse {
+        let body = AppLiveStreamStartRequest(
+            device_code: deviceCode,
+            sample_rate: sampleRate,
+            channels: channels,
+            codec: codec,
+            frame_duration_ms: frameDurationMs
+        )
+        return try await send(path: "app/live/start", method: "POST", body: body, bearerToken: accessToken)
+    }
+
     func listCaptures(accessToken: String, limit: Int = 30) async throws -> [AppCaptureSession] {
         let clamped = max(1, min(limit, 100))
         return try await send(path: "app/captures?limit=\(clamped)", method: "GET", bearerToken: accessToken)

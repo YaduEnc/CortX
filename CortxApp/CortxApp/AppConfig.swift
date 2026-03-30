@@ -11,5 +11,8 @@ enum AppConfig {
         static let pairStatusCharacteristicUUID = "ea85f9b1-1c57-4fdd-95ac-5c92b8a07b3d"
         static let wifiConfigCharacteristicUUID = "f9eb1c79-9c16-4bc3-bd03-563a72fce6c0"
         static let wifiStatusCharacteristicUUID = "ac29d4a8-6d7f-4b91-9d9e-66e2b0fd5e61"
+        static let audioControlCharacteristicUUID = "d413d6c7-2d5f-4f04-8dd1-d0cd9cbdc1f1"
+        static let audioDataCharacteristicUUID = "8f7f3b93-9b0f-4fcb-8a0c-0e7f4e4fd2d1"
+        static let audioStateCharacteristicUUID = "5e0f6d5f-cf6e-4dc5-9fca-2fa2a3434f4a"
     }
 }

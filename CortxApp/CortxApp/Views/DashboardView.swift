@@ -3,6 +3,7 @@ import SwiftUI
 struct DashboardView: View {
     @ObservedObject var session: AppSessionViewModel
     @State private var showPairingSheet = false
+    @StateObject private var bleGateway = BLEPairingViewModel()
     @StateObject private var playback = AudioPlaybackManager()
     @State private var loadingAudioSessionID: String?
     @State private var loadingTranscriptSessionID: String?
@@ -31,7 +32,15 @@ struct DashboardView: View {
                             .padding(.horizontal, 16)
                     }
 
+                    if let liveError = bleGateway.liveErrorMessage {
+                        Text(liveError)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 16)
+                    }
+
                     devicesCard
+                    liveGatewayCard
                     recordingsCard
                 }
                 .opacity(reveal ? 1 : 0)
@@ -44,6 +53,7 @@ struct DashboardView: View {
         .sheet(isPresented: $showPairingSheet) {
             PairDeviceSheet(
                 session: session,
+                ble: bleGateway,
                 onPaired: {
                     Task {
                         await session.refreshPairedDevices()
@@ -233,6 +243,69 @@ struct DashboardView: View {
         .liquidCard()
     }
 
+    private var liveGatewayCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Live Gateway")
+                .font(.headline)
+
+            Text(bleGateway.liveStatusMessage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if bleGateway.isLiveStreaming {
+                HStack(spacing: 12) {
+                    Text("Frames: \(bleGateway.liveFramesSent)")
+                        .font(.caption2)
+                    Text("Packets: \(bleGateway.livePacketsReceived)")
+                        .font(.caption2)
+                    Text("Drops: \(bleGateway.livePacketDrops)")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    startLiveGateway()
+                } label: {
+                    Label("Start Live", systemImage: "dot.radiowaves.left.and.right")
+                }
+                .buttonStyle(LiquidPrimaryButtonStyle())
+                .disabled(bleGateway.isLiveStreaming || session.pairedDevices.isEmpty)
+
+                Button {
+                    bleGateway.stopLiveStreaming()
+                    Task {
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        await session.refreshCaptures()
+                    }
+                } label: {
+                    Label("Stop Live", systemImage: "stop.fill")
+                }
+                .buttonStyle(LiquidSecondaryButtonStyle())
+                .disabled(!bleGateway.isLiveStreaming)
+            }
+        }
+        .padding(14)
+        .liquidCard()
+    }
+
+    private func startLiveGateway() {
+        guard let token = session.pairingAccessToken() else {
+            session.errorMessage = "Login expired. Please log in again."
+            return
+        }
+        guard let deviceCode = session.pairedDevices.first?.device_code else {
+            session.errorMessage = "No paired device available."
+            return
+        }
+        bleGateway.startLiveStreaming(
+            deviceCode: deviceCode,
+            appToken: token,
+            apiClient: session.api()
+        )
+    }
+
     private func playCapture(_ capture: AppCaptureSession) async {
         loadingAudioSessionID = capture.id
         defer { loadingAudioSessionID = nil }
@@ -296,7 +369,7 @@ struct PairDeviceSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @ObservedObject var session: AppSessionViewModel
-    @StateObject private var ble = BLEPairingViewModel()
+    @ObservedObject var ble: BLEPairingViewModel
     @State private var wifiSSID = ""
     @State private var wifiPassword = ""
     @State private var queueingWifi = false

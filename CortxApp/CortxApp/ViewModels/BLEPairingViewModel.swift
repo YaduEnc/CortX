@@ -20,6 +20,12 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
     @Published var wifiStatusMessage = "Wi-Fi idle"
     @Published var canConfigureWifi = false
     @Published var isSendingWifiConfig = false
+    @Published var isLiveStreaming = false
+    @Published var liveStatusMessage = "Live gateway idle."
+    @Published var liveErrorMessage: String?
+    @Published var liveFramesSent = 0
+    @Published var livePacketsReceived = 0
+    @Published var livePacketDrops = 0
 
     private lazy var centralManager = CBCentralManager(delegate: self, queue: .main)
     private var peripherals: [UUID: CBPeripheral] = [:]
@@ -33,6 +39,9 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
     private var pairStatusCharacteristic: CBCharacteristic?
     private var wifiConfigCharacteristic: CBCharacteristic?
     private var wifiStatusCharacteristic: CBCharacteristic?
+    private var audioControlCharacteristic: CBCharacteristic?
+    private var audioDataCharacteristic: CBCharacteristic?
+    private var audioStateCharacteristic: CBCharacteristic?
 
     private var readDeviceInfo: BLEDeviceInfo?
     private var readPairNonce: String?
@@ -40,6 +49,21 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
     private var requestInFlightTask: Task<Void, Never>?
     private var statusTimeoutTask: Task<Void, Never>?
     private var shouldIgnoreDisconnectFailure = false
+    private var liveStartTask: Task<Void, Never>?
+    private var liveAutoConnect = false
+    private var liveTargetDeviceCode: String?
+
+    private var wsTask: URLSessionWebSocketTask?
+    private var wsReady = false
+    private var wsConnected = false
+    private var wsSessionID: String?
+    private var wsSeq = 0
+    private var wsSending = false
+    private var wsPendingFrames: [Data] = []
+    private var pcmAccumulator = Data()
+    private var frameDurationMs = 500
+    private var frameBytes = 8000
+    private var expectedBleSeq: UInt32?
 
     private var activeAppToken: String?
     private var apiClient: APIClient?
@@ -52,6 +76,8 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
     deinit {
         requestInFlightTask?.cancel()
         statusTimeoutTask?.cancel()
+        liveStartTask?.cancel()
+        wsTask?.cancel(with: .goingAway, reason: nil)
     }
 
     func startScanning() {
@@ -125,6 +151,9 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
     }
 
     func disconnect() {
+        if isLiveStreaming {
+            stopLiveStreaming()
+        }
         shouldIgnoreDisconnectFailure = true
         if let connectedPeripheral {
             centralManager.cancelPeripheralConnection(connectedPeripheral)
@@ -169,11 +198,285 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
         peripheral.writeValue(value, for: wifiConfigCharacteristic, type: .withResponse)
     }
 
+    func startLiveStreaming(deviceCode: String, appToken: String, apiClient: APIClient) {
+        guard !isLiveStreaming else { return }
+        guard centralManager.state == .poweredOn else {
+            liveErrorMessage = "Bluetooth is not ready."
+            return
+        }
+
+        liveErrorMessage = nil
+        liveStatusMessage = "Starting live gateway..."
+        isLiveStreaming = true
+        liveFramesSent = 0
+        livePacketsReceived = 0
+        livePacketDrops = 0
+        expectedBleSeq = nil
+        pcmAccumulator.removeAll(keepingCapacity: true)
+        wsPendingFrames.removeAll(keepingCapacity: true)
+        wsSeq = 0
+        wsReady = false
+        wsConnected = false
+
+        activeAppToken = appToken
+        self.apiClient = apiClient
+        liveTargetDeviceCode = deviceCode
+
+        liveStartTask = Task {
+            do {
+                let startResp = try await apiClient.startAppLiveStream(
+                    deviceCode: deviceCode,
+                    sampleRate: 8000,
+                    channels: 1,
+                    codec: "pcm16le",
+                    frameDurationMs: 500,
+                    accessToken: appToken
+                )
+                await MainActor.run {
+                    self.wsSessionID = startResp.session_id
+                    self.frameDurationMs = startResp.frame_duration_ms
+                    self.frameBytes = max(320, startResp.sample_rate * startResp.frame_duration_ms / 1000 * 2)
+                    self.openWebSocket(wsPath: startResp.ws_url)
+                    self.connectForLiveAudioIfNeeded()
+                    self.liveStatusMessage = "Live stream prepared. Waiting for BLE audio..."
+                }
+            } catch {
+                await MainActor.run {
+                    self.isLiveStreaming = false
+                    self.liveErrorMessage = "Live start failed: \(error.localizedDescription)"
+                    self.liveStatusMessage = "Live gateway failed."
+                }
+            }
+        }
+    }
+
+    func stopLiveStreaming(resetBleState: Bool = true) {
+        if let peripheral = connectedPeripheral, let audioControlCharacteristic {
+            if let stopData = "stop".data(using: .utf8) {
+                peripheral.writeValue(stopData, for: audioControlCharacteristic, type: .withResponse)
+            }
+        }
+
+        flushPendingPcmAsFrame()
+        sendWebSocketControl(type: "end", reason: "app_stop")
+        wsTask?.cancel(with: .goingAway, reason: nil)
+        wsTask = nil
+        wsConnected = false
+        wsReady = false
+        wsSending = false
+        wsPendingFrames.removeAll(keepingCapacity: false)
+        pcmAccumulator.removeAll(keepingCapacity: false)
+        isLiveStreaming = false
+        liveAutoConnect = false
+        liveTargetDeviceCode = nil
+        liveStatusMessage = "Live gateway stopped."
+        if resetBleState {
+            expectedBleSeq = nil
+        }
+    }
+
+    private func connectForLiveAudioIfNeeded() {
+        guard isLiveStreaming else { return }
+        if let connectedPeripheral, audioControlCharacteristic != nil, audioDataCharacteristic != nil {
+            sendLiveStartToDevice(peripheral: connectedPeripheral)
+            return
+        }
+
+        liveAutoConnect = true
+        startScanning()
+        liveStatusMessage = "Scanning BLE device for live audio..."
+    }
+
+    private func sendLiveStartToDevice(peripheral: CBPeripheral) {
+        guard let audioControlCharacteristic else { return }
+        guard let startData = "start".data(using: .utf8) else { return }
+        peripheral.writeValue(startData, for: audioControlCharacteristic, type: .withResponse)
+        liveStatusMessage = "Start command sent to device."
+    }
+
+    private func openWebSocket(wsPath: String) {
+        wsTask?.cancel(with: .goingAway, reason: nil)
+        wsTask = nil
+
+        guard let url = buildWebSocketURL(from: wsPath) else {
+            liveErrorMessage = "Invalid ws URL from server."
+            isLiveStreaming = false
+            return
+        }
+
+        let task = URLSession.shared.webSocketTask(with: url)
+        wsTask = task
+        task.resume()
+        wsConnected = true
+        receiveWebSocketLoop()
+    }
+
+    private func buildWebSocketURL(from wsPath: String) -> URL? {
+        if wsPath.hasPrefix("ws://") || wsPath.hasPrefix("wss://") {
+            return URL(string: wsPath)
+        }
+
+        var root = AppConfig.apiBaseURL.absoluteString
+        if root.hasPrefix("https://") {
+            root = root.replacingOccurrences(of: "https://", with: "wss://")
+        } else if root.hasPrefix("http://") {
+            root = root.replacingOccurrences(of: "http://", with: "ws://")
+        }
+        if root.hasSuffix("/v1") {
+            root.removeLast(3)
+        }
+        let full = wsPath.hasPrefix("/") ? root + wsPath : root + "/" + wsPath
+        return URL(string: full)
+    }
+
+    private func receiveWebSocketLoop() {
+        guard let wsTask else { return }
+        wsTask.receive { [weak self] result in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                switch result {
+                case let .success(message):
+                    self.handleWebSocketMessage(message)
+                    self.receiveWebSocketLoop()
+                case let .failure(error):
+                    if self.isLiveStreaming {
+                        self.liveErrorMessage = "WS receive failed: \(error.localizedDescription)"
+                        self.liveStatusMessage = "WebSocket disconnected."
+                        self.isLiveStreaming = false
+                    }
+                }
+            }
+        }
+    }
+
+    private func handleWebSocketMessage(_ message: URLSessionWebSocketTask.Message) {
+        let text: String
+        switch message {
+        case let .string(value):
+            text = value
+        case let .data(value):
+            guard let valueText = String(data: value, encoding: .utf8) else { return }
+            text = valueText
+        @unknown default:
+            return
+        }
+
+        guard
+            let data = text.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let type = (json["type"] as? String)?.lowercased()
+        else {
+            return
+        }
+
+        switch type {
+        case "ready":
+            wsReady = true
+            wsSeq = (json["next_seq"] as? Int) ?? wsSeq
+            liveStatusMessage = "WS ready. Streaming..."
+            pumpWebSocketSend()
+        case "ack":
+            break
+        case "nack":
+            liveErrorMessage = "Server requested retransmit; restarting stream is safer."
+        case "finalized":
+            isLiveStreaming = false
+            liveStatusMessage = "Finalized on server."
+        case "error":
+            let message = (json["message"] as? String) ?? "Unknown websocket error"
+            liveErrorMessage = message
+            isLiveStreaming = false
+        default:
+            break
+        }
+    }
+
+    private func sendWebSocketControl(type: String, reason: String) {
+        guard let wsTask, wsConnected else { return }
+        let payload: [String: Any] = ["type": type, "reason": reason]
+        guard
+            let data = try? JSONSerialization.data(withJSONObject: payload),
+            let text = String(data: data, encoding: .utf8)
+        else {
+            return
+        }
+        wsTask.send(.string(text)) { _ in }
+    }
+
+    private func enqueueFrameForUpload(_ frame: Data) {
+        var packet = Data(capacity: 4 + frame.count)
+        let seq = UInt32(wsSeq)
+        packet.append(UInt8((seq >> 24) & 0xFF))
+        packet.append(UInt8((seq >> 16) & 0xFF))
+        packet.append(UInt8((seq >> 8) & 0xFF))
+        packet.append(UInt8(seq & 0xFF))
+        packet.append(frame)
+
+        wsPendingFrames.append(packet)
+        wsSeq += 1
+        pumpWebSocketSend()
+    }
+
+    private func pumpWebSocketSend() {
+        guard wsReady, wsConnected, !wsSending, !wsPendingFrames.isEmpty, let wsTask else {
+            return
+        }
+        let packet = wsPendingFrames.removeFirst()
+        wsSending = true
+        wsTask.send(.data(packet)) { [weak self] error in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.wsSending = false
+                if let error {
+                    self.liveErrorMessage = "WS send failed: \(error.localizedDescription)"
+                    self.isLiveStreaming = false
+                    return
+                }
+                self.liveFramesSent += 1
+                self.pumpWebSocketSend()
+            }
+        }
+    }
+
+    private func handleAudioDataPacket(_ value: Data) {
+        guard isLiveStreaming else { return }
+        guard value.count > 4 else { return }
+
+        let seq = value.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        if let expectedBleSeq, seq != expectedBleSeq {
+            if seq > expectedBleSeq {
+                livePacketDrops += Int(seq - expectedBleSeq)
+            }
+        }
+        expectedBleSeq = seq + 1
+        livePacketsReceived += 1
+
+        let pcm = value.dropFirst(4)
+        pcmAccumulator.append(contentsOf: pcm)
+        while pcmAccumulator.count >= frameBytes {
+            let frame = Data(pcmAccumulator.prefix(frameBytes))
+            pcmAccumulator.removeFirst(frameBytes)
+            enqueueFrameForUpload(frame)
+        }
+    }
+
+    private func flushPendingPcmAsFrame() {
+        guard !pcmAccumulator.isEmpty else { return }
+        var padded = pcmAccumulator
+        if padded.count < frameBytes {
+            padded.append(contentsOf: [UInt8](repeating: 0, count: frameBytes - padded.count))
+        }
+        enqueueFrameForUpload(Data(padded.prefix(frameBytes)))
+        pcmAccumulator.removeAll(keepingCapacity: false)
+    }
+
     private func resetPairingState(keepDiscovery: Bool) {
         requestInFlightTask?.cancel()
         requestInFlightTask = nil
         statusTimeoutTask?.cancel()
         statusTimeoutTask = nil
+        liveStartTask?.cancel()
+        liveStartTask = nil
 
         isBusy = false
         pairingStatus = .idle
@@ -189,6 +492,9 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
         pairStatusCharacteristic = nil
         wifiConfigCharacteristic = nil
         wifiStatusCharacteristic = nil
+        audioControlCharacteristic = nil
+        audioDataCharacteristic = nil
+        audioStateCharacteristic = nil
         backendPairingRequested = false
         shouldIgnoreDisconnectFailure = false
         activeAppToken = nil
@@ -197,6 +503,7 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
         wifiStatusMessage = "Wi-Fi idle"
         canConfigureWifi = false
         isSendingWifiConfig = false
+        stopLiveStreaming(resetBleState: false)
 
         if !keepDiscovery {
             devices = []
@@ -364,6 +671,15 @@ extension BLEPairingViewModel: CBCentralManagerDelegate {
         }
 
         devices.sort { $0.rssi > $1.rssi }
+
+        if liveAutoConnect, connectedPeripheral == nil {
+            stopScanning()
+            selectedPeripheralID = peripheral.identifier
+            connectedPeripheral = peripheral
+            peripheral.delegate = self
+            statusMessage = "Connecting BLE for live audio..."
+            central.connect(peripheral, options: nil)
+        }
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
@@ -383,6 +699,10 @@ extension BLEPairingViewModel: CBCentralManagerDelegate {
         connectedPeripheral = nil
         canConfigureWifi = false
         isSendingWifiConfig = false
+        if isLiveStreaming {
+            liveErrorMessage = error?.localizedDescription ?? "BLE disconnected during live stream."
+            stopLiveStreaming()
+        }
         if isBusy && !shouldIgnoreDisconnectFailure {
             failPairing(error?.localizedDescription ?? "Device disconnected during pairing.")
         } else {
@@ -412,7 +732,10 @@ extension BLEPairingViewModel: CBPeripheralDelegate {
             CBUUID(string: AppConfig.BLE.pairTokenCharacteristicUUID),
             CBUUID(string: AppConfig.BLE.pairStatusCharacteristicUUID),
             CBUUID(string: AppConfig.BLE.wifiConfigCharacteristicUUID),
-            CBUUID(string: AppConfig.BLE.wifiStatusCharacteristicUUID)
+            CBUUID(string: AppConfig.BLE.wifiStatusCharacteristicUUID),
+            CBUUID(string: AppConfig.BLE.audioControlCharacteristicUUID),
+            CBUUID(string: AppConfig.BLE.audioDataCharacteristicUUID),
+            CBUUID(string: AppConfig.BLE.audioStateCharacteristicUUID)
         ]
         peripheral.discoverCharacteristics(uuids, for: service)
     }
@@ -449,11 +772,24 @@ extension BLEPairingViewModel: CBPeripheralDelegate {
                 wifiStatusCharacteristic = characteristic
                 peripheral.setNotifyValue(true, for: characteristic)
                 peripheral.readValue(for: characteristic)
+            case AppConfig.BLE.audioControlCharacteristicUUID:
+                audioControlCharacteristic = characteristic
+            case AppConfig.BLE.audioDataCharacteristicUUID:
+                audioDataCharacteristic = characteristic
+                peripheral.setNotifyValue(true, for: characteristic)
+            case AppConfig.BLE.audioStateCharacteristicUUID:
+                audioStateCharacteristic = characteristic
+                peripheral.setNotifyValue(true, for: characteristic)
+                peripheral.readValue(for: characteristic)
             default:
                 break
             }
         }
         canConfigureWifi = (wifiConfigCharacteristic != nil && wifiStatusCharacteristic != nil)
+        if liveAutoConnect, isLiveStreaming, audioControlCharacteristic != nil, audioDataCharacteristic != nil {
+            liveAutoConnect = false
+            sendLiveStartToDevice(peripheral: peripheral)
+        }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -461,11 +797,18 @@ extension BLEPairingViewModel: CBPeripheralDelegate {
             failPairing(error.localizedDescription)
             return
         }
-        guard let value = characteristic.value, let text = String(data: value, encoding: .utf8) else {
+        guard let value = characteristic.value else {
+            return
+        }
+        let uuid = characteristic.uuid.uuidString.lowercased()
+        if uuid == AppConfig.BLE.audioDataCharacteristicUUID {
+            handleAudioDataPacket(value)
+            return
+        }
+        guard let text = String(data: value, encoding: .utf8) else {
             return
         }
 
-        let uuid = characteristic.uuid.uuidString.lowercased()
         switch uuid {
         case AppConfig.BLE.deviceInfoCharacteristicUUID:
             let info = parseDeviceInfo(text)
@@ -478,6 +821,8 @@ extension BLEPairingViewModel: CBPeripheralDelegate {
         case AppConfig.BLE.wifiStatusCharacteristicUUID:
             wifiStatusMessage = text.trimmingCharacters(in: .whitespacesAndNewlines)
             isSendingWifiConfig = false
+        case AppConfig.BLE.audioStateCharacteristicUUID:
+            liveStatusMessage = text.trimmingCharacters(in: .whitespacesAndNewlines)
         default:
             break
         }
@@ -496,6 +841,8 @@ extension BLEPairingViewModel: CBPeripheralDelegate {
         } else if characteristic.uuid.uuidString.lowercased() == AppConfig.BLE.wifiConfigCharacteristicUUID {
             wifiStatusMessage = "Wi-Fi config sent. Waiting for device status..."
             isSendingWifiConfig = false
+        } else if characteristic.uuid.uuidString.lowercased() == AppConfig.BLE.audioControlCharacteristicUUID {
+            liveStatusMessage = "Live control sent to device."
         }
     }
 }

@@ -5,7 +5,7 @@
    - Boards Manager -> search `esp32` by Espressif Systems -> Install.
 3. Select board:
    - `Tools -> Board -> ESP32 Arduino -> XIAO_ESP32S3`.
-4. Install library:
+4. Install libraries:
    - Library Manager -> `ArduinoJson` by Benoit Blanchon.
 5. Recommended Tools options:
    - `USB CDC On Boot -> Enabled` (if available)
@@ -24,8 +24,12 @@
      - `I2S_DATA_IN_PIN=41`
 7. Upload and open Serial Monitor at 115200.
 8. Pairing starts automatically on boot (`TEST_MODE_AUTO_PAIR_ON_BOOT=true`).
-9. In Serial Monitor, send `r` to trigger one capture session.
+9. In Serial Monitor:
+   - send `s` to start BLE live audio (phone gateway mode)
+   - send `t` to stop BLE live audio
 
 Notes:
 - Backend must be running at `https://hamza.yaduraj.me/v1`.
 - Register device once with backend before flashing.
+- Audio uplink path is now:
+  - `ESP32 -> BLE notifications -> iOS app -> backend websocket`
