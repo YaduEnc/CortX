@@ -19,3 +19,4 @@ class AppUser(Base):
 
     device_bindings = relationship("DeviceUserBinding", back_populates="user", cascade="all, delete-orphan")
     pairing_sessions = relationship("PairingSession", back_populates="user", cascade="all, delete-orphan")
+    password_reset_tokens = relationship("AppPasswordResetToken", back_populates="user", cascade="all, delete-orphan")

@@ -1,27 +1,35 @@
 from datetime import datetime, timedelta, timezone
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_app_user
 from app.core.config import get_settings
-from app.core.security import create_app_access_token, create_stream_access_token, hash_secret, verify_secret
+from app.core.security import create_app_access_token, create_stream_access_token, hash_pair_token, hash_secret, verify_secret
 from app.db.session import get_db
 from app.models.capture import CaptureSession, SessionStatus
 from app.models.app_user import AppUser
 from app.models.device import Device
-from app.models.pairing import DeviceUserBinding
+from app.models.pairing import DeviceUserBinding, PairingSession
+from app.models.password_reset import AppPasswordResetToken
 from app.models.transcript import Transcript
 from app.services.network_profiles import NETWORK_PROFILE_TTL_SECONDS, queue_network_profile
 from app.services.storage import get_storage
 from app.schemas.app_user import (
+    AppActionStatusResponse,
     AppCaptureListItemResponse,
     AppLiveStreamStartRequest,
     AppLiveStreamStartResponse,
+    AppMeResponse,
     AppCaptureTranscriptResponse,
     AppAuthRequest,
+    AppDeleteAccountRequest,
+    AppForgotPasswordConfirmRequest,
+    AppForgotPasswordRequest,
+    AppForgotPasswordRequestResponse,
     AppRegisterRequest,
     AppTokenResponse,
     PairedDeviceResponse,
@@ -60,6 +68,116 @@ def auth_app_user(payload: AppAuthRequest, db: Session = Depends(get_db)) -> App
     settings = get_settings()
     token = create_app_access_token(user.id)
     return AppTokenResponse(access_token=token, expires_in_minutes=settings.jwt_expires_minutes)
+
+
+@router.post("/password/forgot/request", response_model=AppForgotPasswordRequestResponse)
+def request_password_reset(payload: AppForgotPasswordRequest, db: Session = Depends(get_db)) -> AppForgotPasswordRequestResponse:
+    email = payload.email.lower().strip()
+    now = datetime.now(timezone.utc)
+    settings = get_settings()
+    generic_message = "If the account exists, a reset token has been issued."
+
+    user = db.scalar(select(AppUser).where(AppUser.email == email, AppUser.is_active.is_(True)))
+    if not user:
+        return AppForgotPasswordRequestResponse(
+            status="accepted",
+            message=generic_message,
+            expires_in_seconds=settings.password_reset_token_ttl_seconds,
+        )
+
+    db.execute(
+        delete(AppPasswordResetToken).where(
+            AppPasswordResetToken.user_id == user.id,
+            AppPasswordResetToken.used_at.is_(None),
+        )
+    )
+
+    reset_token = secrets.token_urlsafe(24)
+    expires_at = now + timedelta(seconds=settings.password_reset_token_ttl_seconds)
+    db.add(
+        AppPasswordResetToken(
+            user_id=user.id,
+            token_hash=hash_pair_token(reset_token),
+            expires_at=expires_at,
+        )
+    )
+    db.commit()
+
+    expose_token = settings.environment.lower() != "production"
+    return AppForgotPasswordRequestResponse(
+        status="accepted",
+        message=generic_message,
+        expires_in_seconds=settings.password_reset_token_ttl_seconds,
+        reset_token=reset_token if expose_token else None,
+    )
+
+
+@router.post("/password/forgot/confirm", response_model=AppActionStatusResponse)
+def confirm_password_reset(payload: AppForgotPasswordConfirmRequest, db: Session = Depends(get_db)) -> AppActionStatusResponse:
+    email = payload.email.lower().strip()
+    now = datetime.now(timezone.utc)
+    token_hash = hash_pair_token(payload.reset_token.strip())
+
+    user = db.scalar(select(AppUser).where(AppUser.email == email, AppUser.is_active.is_(True)))
+    if not user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token")
+
+    reset_session = db.scalar(
+        select(AppPasswordResetToken)
+        .where(
+            AppPasswordResetToken.user_id == user.id,
+            AppPasswordResetToken.token_hash == token_hash,
+            AppPasswordResetToken.used_at.is_(None),
+            AppPasswordResetToken.expires_at > now,
+        )
+        .order_by(AppPasswordResetToken.requested_at.desc())
+    )
+    if not reset_session:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token")
+
+    user.password_hash = hash_secret(payload.new_password)
+    reset_session.used_at = now
+
+    db.execute(
+        delete(AppPasswordResetToken).where(
+            AppPasswordResetToken.user_id == user.id,
+            AppPasswordResetToken.id != reset_session.id,
+        )
+    )
+    db.commit()
+
+    return AppActionStatusResponse(status="password_reset", message="Password reset successful")
+
+
+@router.get("/me", response_model=AppMeResponse)
+def get_current_app_user_profile(
+    user: AppUser = Depends(get_current_app_user),
+) -> AppMeResponse:
+    return AppMeResponse(
+        user_id=user.id,
+        email=user.email,
+        full_name=user.full_name,
+        created_at=user.created_at,
+    )
+
+
+@router.post("/me/delete", response_model=AppActionStatusResponse)
+def delete_current_app_user(
+    payload: AppDeleteAccountRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppActionStatusResponse:
+    if not verify_secret(payload.password, user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    user_id = user.id
+    db.execute(delete(DeviceUserBinding).where(DeviceUserBinding.user_id == user_id))
+    db.execute(delete(PairingSession).where(PairingSession.user_id == user_id))
+    db.execute(delete(AppPasswordResetToken).where(AppPasswordResetToken.user_id == user_id))
+    db.delete(user)
+    db.commit()
+
+    return AppActionStatusResponse(status="deleted", message="Account deleted")
 
 
 @router.get("/devices", response_model=list[PairedDeviceResponse])

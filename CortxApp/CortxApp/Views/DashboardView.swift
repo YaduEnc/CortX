@@ -6,9 +6,8 @@ struct DashboardView: View {
     @StateObject private var bleGateway = BLEPairingViewModel()
     @StateObject private var playback = AudioPlaybackManager()
     @State private var loadingAudioSessionID: String?
-    @State private var loadingTranscriptSessionID: String?
-    @State private var transcriptDisplay: TranscriptDisplay?
     @State private var reveal = false
+    @State private var showDeleteAccountSheet = false
 
     var body: some View {
         ZStack {
@@ -62,8 +61,8 @@ struct DashboardView: View {
                 }
             )
         }
-        .sheet(item: $transcriptDisplay) { data in
-            TranscriptView(data: data)
+        .sheet(isPresented: $showDeleteAccountSheet) {
+            DeleteAccountSheet(session: session)
         }
         .task {
             await session.refreshPairedDevices()
@@ -80,15 +79,28 @@ struct DashboardView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Your Devices")
                         .font(.system(size: 30, weight: .bold, design: .rounded))
-                    Text(session.userEmail)
+                    Text(session.userDisplayName)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                    if session.shouldShowEmailAsSubtitle {
+                        Text(session.userEmail)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
-                Button("Logout") {
-                    session.logout()
+                VStack(alignment: .trailing, spacing: 8) {
+                    Button("Logout") {
+                        session.logout()
+                    }
+                    .buttonStyle(LiquidSecondaryButtonStyle())
+
+                    Button("Delete Account") {
+                        showDeleteAccountSheet = true
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
                 }
-                .buttonStyle(LiquidSecondaryButtonStyle())
             }
 
             HStack(spacing: 10) {
@@ -221,14 +233,6 @@ struct DashboardView: View {
                             }
                             .buttonStyle(LiquidPrimaryButtonStyle())
                             .disabled(!capture.isPlayable || loadingAudioSessionID != nil)
-
-                            Button {
-                                // Transcript flow is intentionally disabled in audio-only phase.
-                            } label: {
-                                Label("Transcript Soon", systemImage: "text.bubble")
-                            }
-                            .buttonStyle(LiquidSecondaryButtonStyle())
-                            .disabled(true)
                         }
                     }
                     .padding(.vertical, 5)
@@ -252,6 +256,15 @@ struct DashboardView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(livePhaseColor)
+                    .frame(width: 8, height: 8)
+                Text(livePhaseText)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
             if bleGateway.isLiveStreaming {
                 HStack(spacing: 12) {
                     Text("Frames: \(bleGateway.liveFramesSent)")
@@ -264,11 +277,37 @@ struct DashboardView: View {
                 .foregroundStyle(.secondary)
             }
 
+            if !bleGateway.liveTransportLogs.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(bleGateway.liveTransportLogs.suffix(40).enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+                .frame(minHeight: 120, maxHeight: 180)
+                .padding(10)
+                .background(Color.black.opacity(0.04))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+
             HStack(spacing: 10) {
                 Button {
                     startLiveGateway()
                 } label: {
-                    Label("Start Live", systemImage: "dot.radiowaves.left.and.right")
+                    if bleGateway.livePhase.isBusy && bleGateway.livePhase != .stopping {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.white)
+                            Text(liveStartButtonTitle)
+                        }
+                    } else {
+                        Label(liveStartButtonTitle, systemImage: liveStartButtonSymbol)
+                    }
                 }
                 .buttonStyle(LiquidPrimaryButtonStyle())
                 .disabled(bleGateway.isLiveStreaming || session.pairedDevices.isEmpty)
@@ -280,7 +319,15 @@ struct DashboardView: View {
                         await session.refreshCaptures()
                     }
                 } label: {
-                    Label("Stop Live", systemImage: "stop.fill")
+                    if bleGateway.livePhase == .stopping {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Stopping...")
+                        }
+                    } else {
+                        Label("Stop Live", systemImage: "stop.fill")
+                    }
                 }
                 .buttonStyle(LiquidSecondaryButtonStyle())
                 .disabled(!bleGateway.isLiveStreaming)
@@ -318,41 +365,128 @@ struct DashboardView: View {
         }
     }
 
-    private func viewTranscript(_ capture: AppCaptureSession) async {
-        loadingTranscriptSessionID = capture.id
-        defer { loadingTranscriptSessionID = nil }
+    private var liveStartButtonTitle: String {
+        switch bleGateway.livePhase {
+        case .idle, .failed:
+            return "Start Live"
+        case .starting:
+            return "Starting..."
+        case .connectingBLE:
+            return "Connecting BLE..."
+        case .waitingAudio:
+            return "Waiting Audio..."
+        case .streaming:
+            return "Live Running"
+        case .stopping:
+            return "Stopping..."
+        }
+    }
 
-        do {
-            let transcript = try await session.fetchTranscript(sessionID: capture.id)
-            transcriptDisplay = TranscriptDisplay(
-                id: capture.id,
-                title: capture.device_code,
-                body: transcript.full_text
-            )
-        } catch {
-            session.errorMessage = error.localizedDescription
+    private var liveStartButtonSymbol: String {
+        switch bleGateway.livePhase {
+        case .streaming:
+            return "waveform.badge.mic"
+        case .failed:
+            return "exclamationmark.triangle.fill"
+        default:
+            return "dot.radiowaves.left.and.right"
+        }
+    }
+
+    private var livePhaseText: String {
+        switch bleGateway.livePhase {
+        case .idle:
+            return "Idle"
+        case .starting:
+            return "Starting"
+        case .connectingBLE:
+            return "Connecting BLE"
+        case .waitingAudio:
+            return "Waiting for device audio"
+        case .streaming:
+            return "Streaming"
+        case .stopping:
+            return "Stopping"
+        case .failed:
+            return "Failed"
+        }
+    }
+
+    private var livePhaseColor: Color {
+        switch bleGateway.livePhase {
+        case .idle:
+            return .gray
+        case .starting, .connectingBLE, .waitingAudio, .stopping:
+            return .orange
+        case .streaming:
+            return .green
+        case .failed:
+            return .red
         }
     }
 }
 
-private struct TranscriptDisplay: Identifiable {
-    let id: String
-    let title: String
-    let body: String
-}
-
-private struct TranscriptView: View {
+private struct DeleteAccountSheet: View {
     @Environment(\.dismiss) private var dismiss
-    let data: TranscriptDisplay
+    @ObservedObject var session: AppSessionViewModel
+
+    @State private var password = ""
+    @State private var confirmText = ""
+    @State private var localMessage: String?
+
+    private let confirmationWord = "DELETE"
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                Text(data.body.isEmpty ? "Transcript is empty." : data.body)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
+            VStack(alignment: .leading, spacing: 12) {
+                Text("This permanently deletes your account and unbinds your paired devices.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Text("Type \(confirmationWord) to confirm")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                TextField("Type DELETE", text: $confirmText)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .textFieldStyle(.roundedBorder)
+
+                SecureField("Current password", text: $password)
+                    .textContentType(.password)
+                    .textFieldStyle(.roundedBorder)
+
+                Button {
+                    Task {
+                        await deleteAccount()
+                    }
+                } label: {
+                    if session.isWorking {
+                        ProgressView()
+                            .tint(.white)
+                    } else {
+                        Label("Delete My Account", systemImage: "trash")
+                    }
+                }
+                .buttonStyle(LiquidPrimaryButtonStyle())
+                .disabled(confirmText.uppercased() != confirmationWord || password.count < 8 || session.isWorking)
+
+                if let localMessage {
+                    Text(localMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let error = session.errorMessage {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+
+                Spacer()
             }
-            .navigationTitle(data.title)
+            .padding(16)
+            .navigationTitle("Delete Account")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -362,6 +496,19 @@ private struct TranscriptView: View {
                 }
             }
         }
+    }
+
+    private func deleteAccount() async {
+        guard confirmText.uppercased() == confirmationWord else {
+            localMessage = "Type \(confirmationWord) to confirm."
+            return
+        }
+
+        let success = await session.deleteAccount(password: password)
+        guard success else { return }
+
+        localMessage = "Account deleted."
+        dismiss()
     }
 }
 

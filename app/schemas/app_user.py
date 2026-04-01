@@ -14,10 +14,43 @@ class AppAuthRequest(BaseModel):
     password: str = Field(min_length=8, max_length=255)
 
 
+class AppForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class AppForgotPasswordRequestResponse(BaseModel):
+    status: str
+    message: str
+    expires_in_seconds: int | None = None
+    reset_token: str | None = None
+
+
+class AppForgotPasswordConfirmRequest(BaseModel):
+    email: EmailStr
+    reset_token: str = Field(min_length=12, max_length=255)
+    new_password: str = Field(min_length=8, max_length=255)
+
+
+class AppDeleteAccountRequest(BaseModel):
+    password: str = Field(min_length=8, max_length=255)
+
+
+class AppActionStatusResponse(BaseModel):
+    status: str
+    message: str
+
+
 class AppTokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in_minutes: int
+
+
+class AppMeResponse(BaseModel):
+    user_id: str
+    email: EmailStr
+    full_name: str | None
+    created_at: datetime
 
 
 class PairedDeviceResponse(BaseModel):

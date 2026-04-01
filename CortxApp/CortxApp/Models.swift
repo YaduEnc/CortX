@@ -15,10 +15,43 @@ struct RegisterRequest: Encodable {
     let full_name: String?
 }
 
+struct ForgotPasswordRequest: Encodable {
+    let email: String
+}
+
+struct ForgotPasswordConfirmRequest: Encodable {
+    let email: String
+    let reset_token: String
+    let new_password: String
+}
+
+struct DeleteAccountRequest: Encodable {
+    let password: String
+}
+
 struct AppTokenResponse: Decodable {
     let access_token: String
     let token_type: String
     let expires_in_minutes: Int
+}
+
+struct AppActionStatusResponse: Decodable {
+    let status: String
+    let message: String
+}
+
+struct ForgotPasswordRequestResponse: Decodable {
+    let status: String
+    let message: String
+    let expires_in_seconds: Int?
+    let reset_token: String?
+}
+
+struct AppMeResponse: Decodable {
+    let user_id: String
+    let email: String
+    let full_name: String?
+    let created_at: Date
 }
 
 struct PairingStartRequest: Encodable {

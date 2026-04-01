@@ -1,7 +1,7 @@
 # SecondMind API Contract Freeze (v1, Updated)
 
 Version: `v1`  
-Updated on: `2026-03-31`  
+Updated on: `2026-04-01`  
 Policy: no breaking payload changes on active v1 routes.
 
 Base URL:
@@ -41,6 +41,72 @@ Response `200`:
   "access_token": "<app_jwt>",
   "token_type": "bearer",
   "expires_in_minutes": 1440
+}
+```
+
+### GET `/v1/app/me`
+Headers:
+- `Authorization: Bearer <app_jwt>`
+
+Response `200`:
+```json
+{
+  "user_id": "<uuid>",
+  "email": "user@example.com",
+  "full_name": "Demo User",
+  "created_at": "2026-04-01T08:00:00Z"
+}
+```
+
+### POST `/v1/app/password/forgot/request`
+Request:
+```json
+{
+  "email": "user@example.com"
+}
+```
+Response `200`:
+```json
+{
+  "status": "accepted",
+  "message": "If the account exists, a reset token has been issued.",
+  "expires_in_seconds": 900,
+  "reset_token": "<present_in_non_production_only>"
+}
+```
+
+### POST `/v1/app/password/forgot/confirm`
+Request:
+```json
+{
+  "email": "user@example.com",
+  "reset_token": "<token_from_request_step>",
+  "new_password": "NewStrongPass123"
+}
+```
+Response `200`:
+```json
+{
+  "status": "password_reset",
+  "message": "Password reset successful"
+}
+```
+
+### POST `/v1/app/me/delete`
+Headers:
+- `Authorization: Bearer <app_jwt>`
+
+Request:
+```json
+{
+  "password": "CurrentPassword123"
+}
+```
+Response `200`:
+```json
+{
+  "status": "deleted",
+  "message": "Account deleted"
 }
 ```
 
@@ -188,4 +254,3 @@ These routes are removed from active runtime router:
 - `docs/ble_phone_gateway_flow.md`
 - `docs/iot_pairing_guide.md`
 - `docs/app_pairing_api_flow.md`
-

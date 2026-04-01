@@ -72,6 +72,31 @@ final class APIClient {
         return try await send(path: "app/auth", method: "POST", body: body, bearerToken: nil)
     }
 
+    func requestPasswordReset(email: String) async throws -> ForgotPasswordRequestResponse {
+        let body = ForgotPasswordRequest(
+            email: email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        )
+        return try await send(path: "app/password/forgot/request", method: "POST", body: body, bearerToken: nil)
+    }
+
+    func confirmPasswordReset(email: String, resetToken: String, newPassword: String) async throws -> AppActionStatusResponse {
+        let body = ForgotPasswordConfirmRequest(
+            email: email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            reset_token: resetToken.trimmingCharacters(in: .whitespacesAndNewlines),
+            new_password: newPassword
+        )
+        return try await send(path: "app/password/forgot/confirm", method: "POST", body: body, bearerToken: nil)
+    }
+
+    func getCurrentUser(accessToken: String) async throws -> AppMeResponse {
+        try await send(path: "app/me", method: "GET", bearerToken: accessToken)
+    }
+
+    func deleteCurrentAccount(password: String, accessToken: String) async throws -> AppActionStatusResponse {
+        let body = DeleteAccountRequest(password: password)
+        return try await send(path: "app/me/delete", method: "POST", body: body, bearerToken: accessToken)
+    }
+
     func listPairedDevices(accessToken: String) async throws -> [PairedDevice] {
         try await send(path: "app/devices", method: "GET", bearerToken: accessToken)
     }
