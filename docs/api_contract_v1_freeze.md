@@ -1,13 +1,23 @@
-# SecondMind API Contract Freeze (v1, Updated)
+# SecondMind API Contract Freeze (v1, Active Routes)
 
 Version: `v1`  
-Updated on: `2026-04-01`  
+Updated on: `2026-04-03`  
 Policy: no breaking payload changes on active v1 routes.
 
 Base URL:
 - `https://<domain>/v1`
 
-## 1) App Auth APIs
+## Health
+
+### GET `/v1/health`
+Response `200`:
+```json
+{
+  "status": "ok"
+}
+```
+
+## 1) App Auth and Account APIs
 
 ### POST `/v1/app/register`
 Request:
@@ -54,7 +64,7 @@ Response `200`:
   "user_id": "<uuid>",
   "email": "user@example.com",
   "full_name": "Demo User",
-  "created_at": "2026-04-01T08:00:00Z"
+  "created_at": "2026-04-03T08:00:00Z"
 }
 ```
 
@@ -128,7 +138,7 @@ Response `200`:
 {
   "pairing_session_id": "<uuid>",
   "pair_token": "<short_lived_token>",
-  "expires_at": "2026-03-31T10:00:00Z"
+  "expires_at": "2026-04-03T10:00:00Z"
 }
 ```
 
@@ -151,74 +161,125 @@ Response `200`:
 }
 ```
 
-## 3) Live Gateway Start (App-owned)
+### GET `/v1/app/devices`
+Headers:
+- `Authorization: Bearer <app_jwt>`
 
-### POST `/v1/app/live/start`
+Response `200`:
+```json
+[
+  {
+    "device_id": "<uuid>",
+    "device_code": "manu",
+    "alias": null,
+    "paired_at": "2026-04-03T10:05:00Z"
+  }
+]
+```
+
+## 3) Device Auth and Capture APIs
+
+### POST `/v1/device/register`
+Headers:
+- `X-Admin-Key: <admin_bootstrap_key>`
+
+Request:
+```json
+{
+  "device_code": "manu",
+  "secret": "6109994804"
+}
+```
+Response `201`:
+```json
+{
+  "id": "<uuid>",
+  "device_code": "manu",
+  "is_active": true
+}
+```
+
+### POST `/v1/device/auth`
+Request:
+```json
+{
+  "device_code": "manu",
+  "secret": "6109994804"
+}
+```
+Response `200`:
+```json
+{
+  "access_token": "<device_jwt>",
+  "token_type": "bearer",
+  "expires_in_minutes": 1440
+}
+```
+
+### POST `/v1/device/captures/upload-wav`
+Headers:
+- `Authorization: Bearer <device_jwt>`
+- `Content-Type: audio/wav`
+- `X-Sample-Rate: 16000` (8000..48000)
+- `X-Channels: 1` (1..2)
+- `X-Codec: pcm16le`
+
+Body:
+- raw WAV bytes
+
+Response `201`:
+```json
+{
+  "session_id": "<uuid>",
+  "status": "queued",
+  "queued_for_transcription": true,
+  "audio_size_bytes": 160044,
+  "sample_rate": 16000,
+  "channels": 1,
+  "codec": "pcm16le"
+}
+```
+
+## 4) Network Profile APIs
+
+### POST `/v1/app/devices/{device_id}/network-profile`
 Headers:
 - `Authorization: Bearer <app_jwt>`
 
 Request:
 ```json
 {
-  "device_code": "manu",
-  "sample_rate": 8000,
-  "channels": 1,
-  "codec": "pcm16le",
-  "frame_duration_ms": 500
+  "ssid": "MyWiFi",
+  "password": "secret1234",
+  "source": "app_manual"
 }
 ```
-Response `201`:
+Response `200`:
 ```json
 {
-  "session_id": "<uuid>",
-  "stream_token": "<jwt>",
-  "ws_url": "/v1/stream/ws?stream_token=<jwt>",
-  "status": "receiving",
-  "sample_rate": 8000,
-  "channels": 1,
-  "codec": "pcm16le",
-  "frame_duration_ms": 500,
-  "expires_at": "2026-03-31T10:10:00Z"
+  "status": "queued",
+  "expires_in_seconds": 300
 }
 ```
 
-## 4) WebSocket Ingest
+### POST `/v1/device/network-profile/pull`
+Headers:
+- `Authorization: Bearer <device_jwt>`
 
-### GET `/v1/stream/ws?stream_token=<token>`
-
-Handshake:
-- Server sends:
+Response `200` (when available):
 ```json
 {
-  "type": "ready",
-  "stream_id": "<uuid>",
-  "next_seq": 0,
-  "sample_rate": 8000,
-  "channels": 1,
-  "codec": "pcm16le",
-  "frame_duration_ms": 500
+  "status": "ready",
+  "ssid": "MyWiFi",
+  "password": "secret1234",
+  "source": "app_manual"
 }
 ```
 
-Binary frame format from app:
-- first 4 bytes: sequence (big-endian uint32)
-- remaining bytes: PCM16LE mono payload
-
-Finalize:
-- app sends text message:
+Response `200` (when none queued):
 ```json
 {
-  "type": "end",
-  "reason": "app_stop"
-}
-```
-- server responds:
-```json
-{
-  "type": "finalized",
-  "session_id": "<uuid>",
-  "status": "done",
-  "total_chunks": 10
+  "status": "none"
 }
 ```
 
@@ -240,17 +301,19 @@ Response:
 Headers:
 - `Authorization: Bearer <app_jwt>`
 
-## Removed / Not Active in Router
+## Deprecated Compatibility Endpoint
 
-These routes are removed from active runtime router:
-- `POST /v1/capture/sessions`
-- `POST /v1/capture/chunks`
-- `POST /v1/capture/sessions/{session_id}/finalize`
-- `GET /v1/capture/sessions/{session_id}`
-- `GET /v1/capture/sessions/{session_id}/transcript`
-- `POST /v1/stream/start` (device-start variant)
+### POST `/v1/app/live/start`
+Headers:
+- `Authorization: Bearer <app_jwt>`
 
-## Team handoff docs
-- `docs/ble_phone_gateway_flow.md`
-- `docs/iot_pairing_guide.md`
-- `docs/app_pairing_api_flow.md`
+Current behavior:
+- Returns `410 Gone`
+- Detail: `"Live packet streaming is deprecated. Use device direct upload /v1/device/captures/upload-wav."`
+
+## Not in Active Contract
+
+The following flows are intentionally excluded from the active v1 contract:
+- WebSocket streaming ingest (`/v1/stream/ws`)
+- legacy chunk/session capture ingest routes
+- ad-hoc/experimental command detection routes
