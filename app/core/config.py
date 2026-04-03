@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     whisper_compute_type: str = "int8"
     whisper_device: str = "cpu"
 
+    lmstudio_base_url: str = "http://host.docker.internal:1234/v1"
+    lmstudio_model: str = "local-model"
+    lmstudio_api_key: str | None = None
+    lmstudio_timeout_seconds: int = 45
+    lmstudio_temperature: float = 0.0
+
     max_chunk_bytes: int = 768000
     stream_token_ttl_seconds: int = 900
     stream_max_frame_bytes: int = 32768

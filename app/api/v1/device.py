@@ -14,6 +14,8 @@ from app.schemas.device import (
     DeviceCaptureChunkUploadResponse,
     DeviceCaptureFinalizeRequest,
     DeviceCaptureFinalizeResponse,
+    DeviceHeartbeatRequest,
+    DeviceHeartbeatResponse,
     DeviceCaptureSessionStartRequest,
     DeviceCaptureSessionStartResponse,
     DeviceCaptureUploadResponse,
@@ -72,13 +74,19 @@ def authenticate_device(payload: DeviceAuthRequest, db: Session = Depends(get_db
     if not device or not verify_secret(payload.secret, device.secret_hash) or not device.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
+    device.last_seen_at = utc_now()
+    db.commit()
+
     token = create_device_access_token(device.id)
     settings = get_settings()
     return TokenResponse(access_token=token, expires_in_minutes=settings.jwt_expires_minutes)
 
 
 @router.post("/network-profile/pull", response_model=DeviceNetworkProfilePullResponse)
-def pull_network_profile(device: Device = Depends(get_current_device)) -> DeviceNetworkProfilePullResponse:
+def pull_network_profile(db: Session = Depends(get_db), device: Device = Depends(get_current_device)) -> DeviceNetworkProfilePullResponse:
+    device.last_seen_at = utc_now()
+    db.commit()
+
     profile = consume_network_profile(device.id)
     if not profile:
         return DeviceNetworkProfilePullResponse(status="none")
@@ -113,6 +121,7 @@ def start_capture_session(
         codec=codec,
         total_chunks=0,
     )
+    device.last_seen_at = utc_now()
     db.add(session)
     db.commit()
     db.refresh(session)
@@ -194,6 +203,7 @@ def upload_capture_chunk(
     )
     db.add(chunk)
     session.total_chunks = x_chunk_index + 1
+    device.last_seen_at = utc_now()
 
     try:
         db.commit()
@@ -229,6 +239,8 @@ def finalize_capture_session(
     db: Session = Depends(get_db),
     device: Device = Depends(get_current_device),
 ) -> DeviceCaptureFinalizeResponse:
+    device.last_seen_at = utc_now()
+
     session = db.scalar(
         select(CaptureSession).where(CaptureSession.id == session_id, CaptureSession.device_id == device.id)
     )
@@ -303,6 +315,7 @@ def upload_device_capture_wav(
         audio_blob_size_bytes=len(wav_bytes),
         finalized_at=utc_now(),
     )
+    device.last_seen_at = utc_now()
     db.add(session)
     db.commit()
     db.refresh(session)
@@ -317,4 +330,26 @@ def upload_device_capture_wav(
         sample_rate=session.sample_rate,
         channels=session.channels,
         codec=session.codec,
+    )
+
+
+@router.post("/heartbeat", response_model=DeviceHeartbeatResponse)
+def device_heartbeat(
+    payload: DeviceHeartbeatRequest,
+    db: Session = Depends(get_db),
+    device: Device = Depends(get_current_device),
+) -> DeviceHeartbeatResponse:
+    now = utc_now()
+    device.last_seen_at = now
+    if payload.firmware_version is not None:
+        fw = payload.firmware_version.strip()
+        device.firmware_version = fw or None
+    db.commit()
+    db.refresh(device)
+
+    return DeviceHeartbeatResponse(
+        status="ok",
+        device_id=device.id,
+        last_seen_at=device.last_seen_at or now,
+        firmware_version=device.firmware_version,
     )

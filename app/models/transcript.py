@@ -21,6 +21,7 @@ class Transcript(Base):
 
     session = relationship("CaptureSession", back_populates="transcript")
     segments = relationship("TranscriptSegment", back_populates="transcript", cascade="all, delete-orphan")
+    ai_extraction = relationship("AIExtraction", back_populates="transcript", uselist=False, cascade="all, delete-orphan")
 
 
 class TranscriptSegment(Base):

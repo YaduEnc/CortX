@@ -2,18 +2,33 @@ import logging
 import tempfile
 import time
 from datetime import timedelta
+from datetime import datetime
 
 from celery.exceptions import Retry
 from celery import shared_task
 from sqlalchemy import delete, select
 
 from app.db.session import SessionLocal
+from app.models.assistant import AIExtraction, AIExtractionStatus, AIItem
 from app.models.capture import CaptureSession, SessionStatus
 from app.models.transcript import Transcript, TranscriptSegment
+from app.services.assistant_llm import AssistantLLMError, extract_assistant_payload
+from app.services.assistant_pipeline import AssistantPipelineError, prepare_extraction_record
+from app.services.entity_extraction import EntityExtractionError, extract_entities_from_transcript, persist_entities
 from app.services.transcriber import get_transcriber
 from app.utils.time import utc_now
 
 logger = logging.getLogger(__name__)
+
+
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
 
 
 @shared_task(bind=True, name="app.workers.tasks.process_session_transcription")
@@ -78,6 +93,19 @@ def process_session_transcription(self, session_id: str) -> dict:
         session.finalized_at = session.finalized_at or utc_now()
         db.commit()
 
+        try:
+            _, _, extraction = prepare_extraction_record(db, session.id, force_reset=True)
+            extraction.status = AIExtractionStatus.queued.value
+            extraction.error_message = None
+            db.commit()
+            self.app.send_task("app.workers.tasks.process_session_ai_extraction", args=[session.id], queue="ai")
+        except AssistantPipelineError as exc:
+            db.rollback()
+            logger.warning("AI extraction not queued for session=%s: %s", session.id, exc)
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            logger.exception("Failed to queue AI extraction for session=%s", session.id)
+
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         logger.info("Transcription completed session=%s chunks=%s elapsed_ms=%s", session.id, session.total_chunks, elapsed_ms)
 
@@ -110,6 +138,143 @@ def process_session_transcription(self, session_id: str) -> dict:
             session.error_message = str(exc)
             db.commit()
         logger.exception("Failed transcription for session %s", session_id)
+        return {"status": "error", "reason": str(exc)}
+
+    finally:
+        db.close()
+
+
+@shared_task(bind=True, name="app.workers.tasks.process_session_ai_extraction")
+def process_session_ai_extraction(self, session_id: str) -> dict:
+    db = SessionLocal()
+    started = time.perf_counter()
+
+    try:
+        _, transcript, extraction = prepare_extraction_record(db, session_id)
+        extraction.status = AIExtractionStatus.processing.value
+        extraction.started_at = utc_now()
+        extraction.completed_at = None
+        extraction.error_message = None
+        db.commit()
+
+        payload = extract_assistant_payload(
+            transcript_text=transcript.full_text,
+            transcript_language=transcript.language,
+        )
+
+        db.execute(delete(AIItem).where(AIItem.extraction_id == extraction.id))
+        created_at = utc_now()
+        all_items = []
+        for item in payload["plan_steps"] + payload["tasks"] + payload["reminders"]:
+            all_items.append(
+                AIItem(
+                    extraction_id=extraction.id,
+                    user_id=extraction.user_id,
+                    session_id=extraction.session_id,
+                    transcript_id=extraction.transcript_id,
+                    item_type=item["item_type"],
+                    title=item["title"],
+                    details=item["details"],
+                    due_at=item["due_at"],
+                    timezone=item["timezone"],
+                    priority=item["priority"],
+                    status=item["status"],
+                    source_segment_start_seconds=item["source_segment_start_seconds"],
+                    source_segment_end_seconds=item["source_segment_end_seconds"],
+                    completed_at=created_at if item["status"] == "done" else None,
+                )
+            )
+
+        for row in all_items:
+            db.add(row)
+
+        extraction.intent = payload["intent"]
+        extraction.intent_confidence = payload["intent_confidence"]
+        extraction.summary = payload["summary"]
+        extraction.plan_json = _json_safe(payload["plan_steps"])
+        extraction.raw_json = payload["raw_json"]
+        extraction.model_name = payload["model_name"]
+        extraction.status = AIExtractionStatus.done.value
+        extraction.error_message = None
+        extraction.completed_at = utc_now()
+        db.commit()
+
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        logger.info(
+            "AI extraction completed session=%s transcript=%s extraction=%s items=%s elapsed_ms=%s",
+            session_id,
+            extraction.transcript_id,
+            extraction.id,
+            len(all_items),
+            elapsed_ms,
+        )
+
+        # --- Entity Graph Extraction ---
+        try:
+            raw_entities = extract_entities_from_transcript(
+                transcript_text=transcript.full_text,
+                transcript_language=transcript.language,
+            )
+            if raw_entities:
+                entity_count = persist_entities(
+                    db=db,
+                    user_id=extraction.user_id,
+                    session_id=extraction.session_id,
+                    extraction_id=extraction.id,
+                    entities=raw_entities,
+                )
+                logger.info(
+                    "Entity extraction completed session=%s entities_found=%s mentions_created=%s",
+                    session_id,
+                    len(raw_entities),
+                    entity_count,
+                )
+        except (EntityExtractionError, Exception) as entity_exc:  # noqa: BLE001
+            logger.warning(
+                "Entity extraction failed for session=%s (non-fatal): %s",
+                session_id,
+                entity_exc,
+            )
+
+        return {"status": "ok", "session_id": session_id, "extraction_id": extraction.id}
+
+    except Retry:
+        raise
+
+    except AssistantPipelineError as exc:
+        db.rollback()
+        logger.warning("AI extraction skipped session=%s reason=%s", session_id, exc)
+        return {"status": "error", "reason": str(exc)}
+
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        extraction = db.scalar(select(AIExtraction).where(AIExtraction.session_id == session_id))
+        if extraction and self.request.retries < 4:
+            retry_count = self.request.retries + 1
+            countdown = min(300, 20 * (2 ** self.request.retries))
+            extraction.status = AIExtractionStatus.queued.value
+            extraction.error_message = f"ai_retry_{retry_count}: {str(exc)[:220]}"
+            db.commit()
+            logger.warning(
+                "AI extraction retry scheduled session=%s extraction=%s retry=%s countdown=%ss error=%s",
+                session_id,
+                extraction.id,
+                retry_count,
+                countdown,
+                exc,
+            )
+            raise self.retry(exc=exc, countdown=countdown)
+
+        if extraction:
+            extraction.status = AIExtractionStatus.failed.value
+            extraction.error_message = str(exc)
+            extraction.completed_at = utc_now()
+            db.commit()
+
+        if isinstance(exc, AssistantLLMError):
+            logger.warning("AI extraction failed session=%s reason=%s", session_id, exc)
+        else:
+            logger.exception("AI extraction failed session=%s", session_id)
         return {"status": "error", "reason": str(exc)}
 
     finally:
@@ -150,7 +315,35 @@ def recover_stuck_transcriptions(self, limit: int = 100) -> dict:
             self.app.send_task("app.workers.tasks.process_session_transcription", args=[sid], queue="transcription")
             enqueued += 1
 
-        return {"status": "ok", "stale_recovered": len(stale_sessions), "enqueued": enqueued}
+        ai_stale_cutoff = now - timedelta(minutes=5)
+        stale_ai = db.scalars(
+            select(AIExtraction).where(
+                AIExtraction.status == AIExtractionStatus.processing.value,
+                AIExtraction.started_at.is_not(None),
+                AIExtraction.started_at < ai_stale_cutoff,
+            ).limit(clamped_limit)
+        ).all()
+        for extraction in stale_ai:
+            extraction.status = AIExtractionStatus.queued.value
+            extraction.error_message = "recovered_from_stale_processing"
+
+        queued_ai = db.scalars(
+            select(AIExtraction).where(AIExtraction.status == AIExtractionStatus.queued.value).limit(clamped_limit)
+        ).all()
+        db.commit()
+
+        enqueued_ai = 0
+        for extraction in queued_ai:
+            self.app.send_task("app.workers.tasks.process_session_ai_extraction", args=[extraction.session_id], queue="ai")
+            enqueued_ai += 1
+
+        return {
+            "status": "ok",
+            "stale_recovered": len(stale_sessions),
+            "enqueued": enqueued,
+            "ai_stale_recovered": len(stale_ai),
+            "ai_enqueued": enqueued_ai,
+        }
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         logger.exception("Failed recovering stuck transcriptions")

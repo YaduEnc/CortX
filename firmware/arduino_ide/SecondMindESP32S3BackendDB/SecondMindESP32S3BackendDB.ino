@@ -824,11 +824,6 @@ bool runContinuousChunkOnce() {
     return false;
   }
 
-  const uint32_t idx = g_nextChunkIndex;
-  const uint32_t startMs = idx * CHUNK_MS;
-  const uint32_t endMs = startMs + CHUNK_MS;
-
-  Serial.printf("[REC] Recording chunk idx=%lu (%d sec)\n", static_cast<unsigned long>(idx), CHUNK_SECONDS);
   if (!recordPcmChunk(buf, static_cast<size_t>(CHUNK_BYTES))) {
     xSemaphoreGive(sem);
     return false;
@@ -845,6 +840,12 @@ bool runContinuousChunkOnce() {
     g_activeSessionId = sid;
     g_nextChunkIndex = 0;
   }
+
+  // Index must be captured AFTER potential session reset to avoid stale non-zero 
+  // index on the first chunk of a new session.
+  const uint32_t idx = g_nextChunkIndex;
+  const uint32_t startMs = idx * CHUNK_MS;
+  const uint32_t endMs = startMs + CHUNK_MS;
 
   ChunkUploadJob job;
   memset(&job, 0, sizeof(job));
@@ -981,7 +982,7 @@ void setup() {
   xSemaphoreGive(g_bufASem);
   xSemaphoreGive(g_bufBSem);
 
-  xTaskCreatePinnedToCore(uploaderTask, "uploader", 8192, nullptr, 1, &g_uploaderTaskHandle, 1);
+  xTaskCreatePinnedToCore(uploaderTask, "uploader", 16384, nullptr, 1, &g_uploaderTaskHandle, 1);
 
   Serial.printf("[MEM] chunk_bytes=%d (~%d sec) free_heap=%d\n", CHUNK_BYTES, CHUNK_SECONDS, ESP.getFreeHeap());
   Serial.printf("[CFG] target_chunk_sec=%d backend_max_chunk_bytes=%d\n", TARGET_CHUNK_SECONDS, BACKEND_MAX_CHUNK_BYTES);

@@ -92,6 +92,19 @@ final class APIClient {
         try await send(path: "app/me", method: "GET", bearerToken: accessToken)
     }
 
+    func updateCurrentUser(fullName: String?, accessToken: String) async throws -> AppMeResponse {
+        let body = AppMeUpdateRequest(full_name: fullName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty)
+        return try await send(path: "app/me", method: "PATCH", body: body, bearerToken: accessToken)
+    }
+
+    func getUserPreferences(accessToken: String) async throws -> AppUserPreferences {
+        try await send(path: "app/me/preferences", method: "GET", bearerToken: accessToken)
+    }
+
+    func updateUserPreferences(payload: AppUserPreferencesUpdateRequest, accessToken: String) async throws -> AppUserPreferences {
+        try await send(path: "app/me/preferences", method: "PATCH", body: payload, bearerToken: accessToken)
+    }
+
     func deleteCurrentAccount(password: String, accessToken: String) async throws -> AppActionStatusResponse {
         let body = DeleteAccountRequest(password: password)
         return try await send(path: "app/me/delete", method: "POST", body: body, bearerToken: accessToken)
@@ -99,6 +112,30 @@ final class APIClient {
 
     func listPairedDevices(accessToken: String) async throws -> [PairedDevice] {
         try await send(path: "app/devices", method: "GET", bearerToken: accessToken)
+    }
+
+    func updatePairedDevice(deviceID: String, alias: String?, accessToken: String) async throws -> PairedDevice {
+        let body = AppDeviceUpdateRequest(alias: alias?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty)
+        return try await send(path: "app/devices/\(deviceID)", method: "PATCH", body: body, bearerToken: accessToken)
+    }
+
+    func unpairDevice(deviceID: String, accessToken: String) async throws -> AppActionStatusResponse {
+        try await send(path: "app/devices/\(deviceID)", method: "DELETE", body: Optional<String>.none, bearerToken: accessToken)
+    }
+
+    func queueDeviceNetworkProfile(
+        deviceID: String,
+        ssid: String,
+        password: String,
+        source: String = "app_manual",
+        accessToken: String
+    ) async throws -> AppQueueNetworkProfileResponse {
+        let body = AppQueueNetworkProfileRequest(
+            ssid: ssid.trimmingCharacters(in: .whitespacesAndNewlines),
+            password: password,
+            source: source
+        )
+        return try await send(path: "app/devices/\(deviceID)/network-profile", method: "POST", body: body, bearerToken: accessToken)
     }
 
     func startPairing(deviceCode: String, pairNonce: String, accessToken: String) async throws -> PairingStartResponse {
@@ -115,6 +152,48 @@ final class APIClient {
         try await send(path: "app/captures/\(sessionID)/transcript", method: "GET", bearerToken: accessToken)
     }
 
+    func uploadAppCaptureWAV(
+        wavData: Data,
+        sampleRate: Int = 16_000,
+        channels: Int = 1,
+        codec: String = "pcm16le",
+        accessToken: String
+    ) async throws -> AppCaptureUploadResponse {
+        guard let url = buildURL(path: "app/captures/upload-wav") else {
+            throw APIClientError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.httpBody = wavData
+        request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(String(sampleRate), forHTTPHeaderField: "X-Sample-Rate")
+        request.setValue(String(channels), forHTTPHeaderField: "X-Channels")
+        request.setValue(codec, forHTTPHeaderField: "X-Codec")
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw APIClientError.invalidResponse
+        }
+        if http.statusCode == 401 {
+            throw APIClientError.unauthorized
+        }
+        guard (200...299).contains(http.statusCode) else {
+            if let apiError = try? decoder.decode(APIErrorResponse.self, from: data) {
+                throw APIClientError.server(apiError.detail)
+            }
+            throw APIClientError.server("Request failed with status \(http.statusCode)")
+        }
+
+        do {
+            return try decoder.decode(AppCaptureUploadResponse.self, from: data)
+        } catch {
+            throw APIClientError.decoding
+        }
+    }
+
     func downloadCaptureAudio(sessionID: String, accessToken: String) async throws -> Data {
         let (data, _) = try await rawRequest(
             path: "app/captures/\(sessionID)/audio",
@@ -122,6 +201,83 @@ final class APIClient {
             bearerToken: accessToken
         )
         return data
+    }
+
+    func getCaptureAI(sessionID: String, accessToken: String) async throws -> AppCaptureAIResponse {
+        try await send(path: "app/captures/\(sessionID)/ai", method: "GET", bearerToken: accessToken)
+    }
+
+    func listAssistantItems(
+        accessToken: String,
+        itemType: String? = nil,
+        itemStatus: String? = nil,
+        limit: Int = 60
+    ) async throws -> [AppAssistantItem] {
+        let clamped = max(1, min(limit, 200))
+        var queryParts = ["limit=\(clamped)"]
+        if let itemType, !itemType.isEmpty {
+            queryParts.append("item_type=\(itemType.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? itemType)")
+        }
+        if let itemStatus, !itemStatus.isEmpty {
+            queryParts.append("item_status=\(itemStatus.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? itemStatus)")
+        }
+        let query = queryParts.joined(separator: "&")
+        return try await send(path: "app/assistant/items?\(query)", method: "GET", bearerToken: accessToken)
+    }
+
+    func updateAssistantItem(
+        itemID: String,
+        payload: AppAssistantItemUpdateRequest,
+        accessToken: String
+    ) async throws -> AppAssistantItem {
+        try await send(path: "app/assistant/items/\(itemID)", method: "PATCH", body: payload, bearerToken: accessToken)
+    }
+
+    func reprocessCaptureAI(sessionID: String, accessToken: String) async throws -> AppCaptureAIReprocessResponse {
+        try await send(path: "app/captures/\(sessionID)/ai/reprocess", method: "POST", body: Optional<String>.none, bearerToken: accessToken)
+    }
+
+    func getDashboardDailySummary(
+        accessToken: String,
+        date: String? = nil,
+        timezone: String,
+        deviceID: String? = nil
+    ) async throws -> DashboardDailySummary {
+        var queryParts: [String] = []
+        if let date, !date.isEmpty {
+            queryParts.append("date=\(date)")
+        }
+        let tzEncoded = timezone.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? timezone
+        queryParts.append("tz=\(tzEncoded)")
+        if let deviceID, !deviceID.isEmpty {
+            queryParts.append("device_id=\(deviceID)")
+        }
+        let query = queryParts.joined(separator: "&")
+        return try await send(path: "app/dashboard/daily-summary?\(query)", method: "GET", bearerToken: accessToken)
+    }
+
+    // MARK: - Idea Graph
+
+    func fetchIdeaGraph(
+        accessToken: String,
+        entityType: String? = nil,
+        minMentions: Int = 1,
+        limit: Int = 100
+    ) async throws -> IdeaGraphResponse {
+        var queryParts = ["limit=\(max(1, min(limit, 500)))", "min_mentions=\(minMentions)"]
+        if let entityType, !entityType.isEmpty {
+            queryParts.append("entity_type=\(entityType.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? entityType)")
+        }
+        let query = queryParts.joined(separator: "&")
+        return try await send(path: "app/idea-graph?\(query)", method: "GET", bearerToken: accessToken)
+    }
+
+    func fetchEntityMentions(
+        entityID: String,
+        accessToken: String,
+        limit: Int = 50
+    ) async throws -> [IdeaGraphMention] {
+        try await send(path: "app/idea-graph/entities/\(entityID)/mentions?limit=\(limit)", method: "GET", bearerToken: accessToken)
     }
 
     private func send<Body: Encodable, Response: Decodable>(

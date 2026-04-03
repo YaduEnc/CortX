@@ -1,392 +1,421 @@
-# SecondMind API Contract Freeze (v1, Active Routes)
+# CortX API Contract (v1, Current)
 
 Version: `v1`  
-Updated on: `2026-04-03`  
-Policy: no breaking payload changes on active v1 routes.
+Updated: `2026-04-03`  
+Base URL: `https://<domain>/v1` (local: `http://localhost:8000/v1`)
 
-Base URL:
-- `https://<domain>/v1`
+Auth:
+- App routes: `Authorization: Bearer <app_jwt>`
+- Device routes: `Authorization: Bearer <device_jwt>`
+- Device bootstrap route: `X-Admin-Key: <admin_bootstrap_key>`
 
 ## Health
 
-### GET `/v1/health`
-Response `200`:
+### `GET /v1/health`
+```json
+{"status": "ok"}
+```
+
+### `GET /v1/health/ai-metrics`
 ```json
 {
-  "status": "ok"
+  "status_counts": {"queued": 0, "processing": 0, "done": 0, "failed": 0},
+  "avg_done_latency_ms": null,
+  "last_error": null,
+  "updated_at": "2026-04-03T15:10:22Z"
 }
 ```
 
-## 1) App Auth and Account APIs
+## App Auth + Account
 
-### POST `/v1/app/register`
+### `POST /v1/app/register`
 Request:
 ```json
-{
-  "email": "user@example.com",
-  "password": "StrongPass123",
-  "full_name": "Demo User"
-}
+{"email":"user@example.com","password":"StrongPass123","full_name":"Demo User"}
 ```
 Response `201`:
 ```json
-{
-  "access_token": "<app_jwt>",
-  "token_type": "bearer",
-  "expires_in_minutes": 1440
-}
+{"access_token":"<app_jwt>","token_type":"bearer","expires_in_minutes":1440}
 ```
 
-### POST `/v1/app/auth`
+### `POST /v1/app/auth`
 Request:
 ```json
-{
-  "email": "user@example.com",
-  "password": "StrongPass123"
-}
+{"email":"user@example.com","password":"StrongPass123"}
 ```
-Response `200`:
+Response `200` same token payload.
+
+### `GET /v1/app/me`
 ```json
-{
-  "access_token": "<app_jwt>",
-  "token_type": "bearer",
-  "expires_in_minutes": 1440
-}
+{"user_id":"<uuid>","email":"user@example.com","full_name":"Demo User","created_at":"2026-04-03T08:00:00Z"}
 ```
 
-### GET `/v1/app/me`
-Headers:
-- `Authorization: Bearer <app_jwt>`
-
-Response `200`:
-```json
-{
-  "user_id": "<uuid>",
-  "email": "user@example.com",
-  "full_name": "Demo User",
-  "created_at": "2026-04-03T08:00:00Z"
-}
-```
-
-### POST `/v1/app/password/forgot/request`
+### `PATCH /v1/app/me`
 Request:
 ```json
-{
-  "email": "user@example.com"
-}
+{"full_name":"Updated Name"}
 ```
-Response `200`:
+Response `200` same shape as `GET /app/me`.
+
+### `GET /v1/app/me/preferences`
 ```json
 {
-  "status": "accepted",
-  "message": "If the account exists, a reset token has been issued.",
-  "expires_in_seconds": 900,
-  "reset_token": "<present_in_non_production_only>"
+  "timezone":"Asia/Kolkata",
+  "daily_summary_enabled":true,
+  "reminder_notifications_enabled":true,
+  "calendar_export_default_enabled":false,
+  "updated_at":"2026-04-03T15:10:22Z"
 }
 ```
 
-### POST `/v1/app/password/forgot/confirm`
+### `PATCH /v1/app/me/preferences`
+Request (partial allowed):
+```json
+{
+  "timezone":"Asia/Kolkata",
+  "daily_summary_enabled":true,
+  "reminder_notifications_enabled":true,
+  "calendar_export_default_enabled":false
+}
+```
+Response `200` same as `GET /app/me/preferences`.
+
+### `POST /v1/app/password/forgot/request`
 Request:
 ```json
-{
-  "email": "user@example.com",
-  "reset_token": "<token_from_request_step>",
-  "new_password": "NewStrongPass123"
-}
+{"email":"user@example.com"}
 ```
 Response `200`:
 ```json
 {
-  "status": "password_reset",
-  "message": "Password reset successful"
+  "status":"accepted",
+  "message":"If the account exists, a reset token has been issued.",
+  "expires_in_seconds":900,
+  "reset_token":"<non-production-only>"
 }
 ```
 
-### POST `/v1/app/me/delete`
-Headers:
-- `Authorization: Bearer <app_jwt>`
-
+### `POST /v1/app/password/forgot/confirm`
 Request:
 ```json
-{
-  "password": "CurrentPassword123"
-}
+{"email":"user@example.com","reset_token":"<token>","new_password":"NewStrongPass123"}
 ```
 Response `200`:
 ```json
-{
-  "status": "deleted",
-  "message": "Account deleted"
-}
+{"status":"password_reset","message":"Password reset successful"}
 ```
 
-## 2) Pairing APIs
-
-### POST `/v1/pairing/start`
-Headers:
-- `Authorization: Bearer <app_jwt>`
-
+### `POST /v1/app/me/delete`
 Request:
 ```json
-{
-  "device_code": "manu",
-  "pair_nonce": "<nonce_from_ble>"
-}
+{"password":"CurrentPassword123"}
 ```
 Response `200`:
 ```json
-{
-  "pairing_session_id": "<uuid>",
-  "pair_token": "<short_lived_token>",
-  "expires_at": "2026-04-03T10:00:00Z"
-}
+{"status":"deleted","message":"Account deleted"}
 ```
 
-### POST `/v1/device/pairing/complete`
-Headers:
-- `Authorization: Bearer <device_jwt>`
+## Pairing
 
+### `POST /v1/pairing/start`
 Request:
 ```json
-{
-  "pair_token": "<pair_token_from_app_over_ble>"
-}
+{"device_code":"manu","pair_nonce":"<ble_nonce>"}
 ```
 Response `200`:
 ```json
-{
-  "status": "completed",
-  "pairing_session_id": "<uuid>",
-  "user_id": "<uuid>"
-}
+{"pairing_session_id":"<uuid>","pair_token":"<short_lived_token>","expires_at":"2026-04-03T10:00:00Z"}
 ```
 
-### GET `/v1/app/devices`
-Headers:
-- `Authorization: Bearer <app_jwt>`
-
+### `POST /v1/device/pairing/complete`
+Request:
+```json
+{"pair_token":"<short_lived_token>"}
+```
 Response `200`:
+```json
+{"status":"completed","pairing_session_id":"<uuid>","user_id":"<uuid>"}
+```
+
+## Devices (App-side)
+
+### `GET /v1/app/devices`
 ```json
 [
   {
-    "device_id": "<uuid>",
-    "device_code": "manu",
-    "alias": null,
-    "paired_at": "2026-04-03T10:05:00Z"
+    "device_id":"<uuid>",
+    "device_code":"manu",
+    "alias":null,
+    "paired_at":"2026-04-03T10:05:00Z",
+    "last_seen_at":"2026-04-03T15:00:00Z",
+    "status":"online",
+    "firmware_version":"v1.3.0",
+    "last_capture_at":"2026-04-03T14:42:00Z"
   }
 ]
 ```
 
-## 3) Device Auth and Capture APIs
-
-### POST `/v1/device/register`
-Headers:
-- `X-Admin-Key: <admin_bootstrap_key>`
-
+### `PATCH /v1/app/devices/{device_id}`
 Request:
 ```json
-{
-  "device_code": "manu",
-  "secret": "6109994804"
-}
+{"alias":"Office Recorder"}
+```
+Response `200`: same object shape as one row in `GET /app/devices`.
+
+### `DELETE /v1/app/devices/{device_id}`
+Response `200`:
+```json
+{"status":"unpaired","message":"Device unpaired"}
+```
+
+### `POST /v1/app/devices/{device_id}/network-profile`
+Request:
+```json
+{"ssid":"MyWifi","password":"pass123","source":"app_manual"}
+```
+Response `200`:
+```json
+{"status":"queued","expires_in_seconds":300}
+```
+
+## Device Auth + Capture
+
+### `POST /v1/device/register` (admin bootstrap)
+Request:
+```json
+{"device_code":"manu","secret":"6109994804"}
 ```
 Response `201`:
 ```json
-{
-  "id": "<uuid>",
-  "device_code": "manu",
-  "is_active": true
-}
+{"id":"<uuid>","device_code":"manu","is_active":true}
 ```
 
-### POST `/v1/device/auth`
+### `POST /v1/device/auth`
 Request:
 ```json
-{
-  "device_code": "manu",
-  "secret": "6109994804"
-}
+{"device_code":"manu","secret":"6109994804"}
+```
+Response `200`:
+```json
+{"access_token":"<device_jwt>","token_type":"bearer","expires_in_minutes":1440}
+```
+
+### `POST /v1/device/heartbeat`
+Request:
+```json
+{"firmware_version":"v1.3.0"}
 ```
 Response `200`:
 ```json
 {
-  "access_token": "<device_jwt>",
-  "token_type": "bearer",
-  "expires_in_minutes": 1440
+  "status":"ok",
+  "device_id":"<uuid>",
+  "last_seen_at":"2026-04-03T15:12:10Z",
+  "firmware_version":"v1.3.0"
 }
 ```
 
-### POST `/v1/device/capture/sessions`
-Headers:
-- `Authorization: Bearer <device_jwt>`
-- `Content-Type: application/json`
+### `POST /v1/device/network-profile/pull`
+Response when profile queued:
+```json
+{"status":"ready","ssid":"MyWifi","password":"pass123","source":"app_manual"}
+```
+Response when none:
+```json
+{"status":"none"}
+```
 
+### `POST /v1/device/capture/sessions`
 Request:
 ```json
-{
-  "sample_rate": 16000,
-  "channels": 1,
-  "codec": "pcm16le"
-}
+{"sample_rate":16000,"channels":1,"codec":"pcm16le"}
 ```
 Response `201`:
 ```json
-{
-  "session_id": "<uuid>",
-  "status": "receiving",
-  "sample_rate": 16000,
-  "channels": 1,
-  "codec": "pcm16le"
-}
+{"session_id":"<uuid>","status":"receiving","sample_rate":16000,"channels":1,"codec":"pcm16le"}
 ```
 
-### POST `/v1/device/capture/chunks`
+### `POST /v1/device/capture/chunks`
 Headers:
-- `Authorization: Bearer <device_jwt>`
 - `Content-Type: application/octet-stream`
 - `X-Session-Id: <session_uuid>`
-- `X-Chunk-Index: 0` (0-based, strict sequence)
+- `X-Chunk-Index: 0` (strict ordered sequence)
 - `X-Start-Ms: 0`
-- `X-End-Ms: 10000`
+- `X-End-Ms: 8000`
 - `X-Sample-Rate: 16000`
 - `X-Channels: 1`
 - `X-Codec: pcm16le`
 
-Body:
-- raw PCM16LE bytes for this chunk
+Response `201` stored:
+```json
+{"session_id":"<uuid>","chunk_index":0,"status":"stored","ack_seq":0,"next_seq":1,"total_chunks":1,"byte_size":256000}
+```
+Response `201` duplicate:
+```json
+{"session_id":"<uuid>","chunk_index":0,"status":"duplicate","ack_seq":0,"next_seq":1,"total_chunks":1,"byte_size":256000}
+```
+
+### `POST /v1/device/capture/sessions/{session_id}/finalize`
+Request:
+```json
+{"reason":"device_stop"}
+```
+Response `200`:
+```json
+{"session_id":"<uuid>","status":"queued","total_chunks":5,"queued_for_transcription":true}
+```
+
+### `POST /v1/device/captures/upload-wav` (compatibility route)
+Headers:
+- `Content-Type: audio/wav`
+- `X-Sample-Rate: 16000`
+- `X-Channels: 1`
+- `X-Codec: pcm16le`
 
 Response `201`:
 ```json
 {
-  "session_id": "<uuid>",
-  "chunk_index": 0,
-  "status": "stored",
-  "ack_seq": 0,
-  "next_seq": 1,
-  "total_chunks": 1,
-  "byte_size": 320000
+  "session_id":"<uuid>",
+  "status":"queued",
+  "queued_for_transcription":true,
+  "audio_size_bytes":160044,
+  "sample_rate":16000,
+  "channels":1,
+  "codec":"pcm16le"
 }
 ```
 
-Duplicate re-send response `201`:
-```json
-{
-  "session_id": "<uuid>",
-  "chunk_index": 0,
-  "status": "duplicate",
-  "ack_seq": 0,
-  "next_seq": 1,
-  "total_chunks": 1,
-  "byte_size": 320000
-}
-```
+## Dashboard Daily Summary
 
-### POST `/v1/device/capture/sessions/{session_id}/finalize`
-Headers:
-- `Authorization: Bearer <device_jwt>`
-- `Content-Type: application/json`
-
-Request:
-```json
-{
-  "reason": "device_stop"
-}
-```
-Response `200`:
-```json
-{
-  "session_id": "<uuid>",
-  "status": "queued",
-  "total_chunks": 5,
-  "queued_for_transcription": true
-}
-```
-
+### `GET /v1/app/dashboard/daily-summary?date=YYYY-MM-DD&tz=Asia/Kolkata&device_id=<optional>`
 Notes:
-- Endpoint is idempotent for already-finalized sessions (`queued`, `transcribing`, `done`).
+- `date` optional, defaults to today in requested timezone.
+- `tz` optional, defaults to stored user preference timezone.
+- `device_id` optional; if omitted, summary aggregates all paired devices.
 
-### POST `/v1/device/captures/upload-wav` (compatibility route)
-Headers:
-- `Authorization: Bearer <device_jwt>`
-- `Content-Type: audio/wav`
-
-Body:
-- full WAV bytes (single-shot upload)
-
-## 4) Network Profile APIs
-
-### POST `/v1/app/devices/{device_id}/network-profile`
-Headers:
-- `Authorization: Bearer <app_jwt>`
-
-Request:
-```json
-{
-  "ssid": "MyWiFi",
-  "password": "secret1234",
-  "source": "app_manual"
-}
-```
 Response `200`:
 ```json
 {
-  "status": "queued",
-  "expires_in_seconds": 300
+  "date":"2026-04-03",
+  "timezone":"Asia/Kolkata",
+  "headline":"Today you captured 5 memories across 2 devices. Top intent: update_api. You have 3 due actions/reminders and 2 upcoming events.",
+  "generated_at":"2026-04-03T15:20:00Z",
+  "metrics":{
+    "memories_count":5,
+    "transcript_ready_count":5,
+    "open_actions_due_count":3,
+    "upcoming_events_count":2,
+    "top_intent":"update_api",
+    "device_count":2
+  },
+  "focus_items":[
+    {
+      "item_id":"<uuid>",
+      "item_type":"task",
+      "title":"Update API docs",
+      "due_at":"2026-04-04T09:00:00Z",
+      "status":"open",
+      "session_id":"<uuid>",
+      "device_code":"manu"
+    }
+  ],
+  "device_breakdown":[
+    {
+      "device_id":"<uuid>",
+      "device_code":"manu",
+      "memories_count":3,
+      "transcript_ready_count":3,
+      "open_action_count":2,
+      "upcoming_event_count":1
+    }
+  ]
 }
 ```
 
-### POST `/v1/device/network-profile/pull`
-Headers:
-- `Authorization: Bearer <device_jwt>`
+## App Memory + AI
 
-Response `200` (when available):
+### `POST /v1/app/captures/upload-wav`
+Headers:
+- `Content-Type: audio/wav`
+- `Authorization: Bearer <app_jwt>`
+- `X-Sample-Rate: 16000`
+- `X-Channels: 1`
+- `X-Codec: pcm16le`
+
+Response `201`:
 ```json
 {
-  "status": "ready",
-  "ssid": "MyWiFi",
-  "password": "secret1234",
-  "source": "app_manual"
+  "session_id":"<uuid>",
+  "status":"queued",
+  "queued_for_transcription":true,
+  "audio_size_bytes":160044,
+  "sample_rate":16000,
+  "channels":1,
+  "codec":"pcm16le"
 }
 ```
 
-Response `200` (when none queued):
+### `GET /v1/app/captures?limit=30`
 ```json
-{
-  "status": "none"
-}
+[
+  {
+    "session_id":"<uuid>",
+    "device_id":"<uuid>",
+    "device_code":"manu",
+    "status":"done",
+    "total_chunks":4,
+    "started_at":"2026-04-03T13:32:00Z",
+    "finalized_at":"2026-04-03T13:32:35Z",
+    "duration_seconds":31.8,
+    "has_audio":true
+  }
+]
 ```
 
-## 5) App Capture Retrieval APIs
+### `GET /v1/app/captures/{session_id}/audio`
+Response `200`: binary WAV (`audio/wav`).
 
-### GET `/v1/app/captures?limit=20`
-Headers:
-- `Authorization: Bearer <app_jwt>`
+### `GET /v1/app/captures/{session_id}/transcript`
+```json
+{"session_id":"<uuid>","model_name":"small","language":"en","full_text":"...","duration_seconds":31.8}
+```
 
-Returns capture rows for the logged-in user, including statuses like:
-- `receiving`
-- `queued`
-- `transcribing`
-- `done`
-- `failed`
+### `GET /v1/app/captures/{session_id}/ai`
+Returns extraction status + intent/summary/plan + assistant items.
 
-### GET `/v1/app/captures/{session_id}/audio`
-Headers:
-- `Authorization: Bearer <app_jwt>`
+### `POST /v1/app/captures/{session_id}/ai/reprocess`
+```json
+{"session_id":"<uuid>","extraction_id":"<uuid>","status":"queued","queued":true}
+```
 
-Response:
-- Content-Type: `audio/wav`
-- Raw WAV bytes
+### `GET /v1/app/assistant/items?item_type=task|reminder|plan_step&item_status=open|done|dismissed|snoozed&limit=60`
+Returns list of assistant items scoped to current user.
 
-### GET `/v1/app/captures/{session_id}/transcript`
-Headers:
-- `Authorization: Bearer <app_jwt>`
+### `PATCH /v1/app/assistant/items/{item_id}`
+Request examples:
+```json
+{"status":"done"}
+```
+```json
+{"snooze_minutes":60,"timezone":"Asia/Kolkata"}
+```
+```json
+{"due_at":"2026-04-04T10:30:00Z","timezone":"Asia/Kolkata"}
+```
 
-## Deprecated Compatibility Endpoint
+## Deprecated / Legacy
 
-### POST `/v1/app/live/start`
-Headers:
-- `Authorization: Bearer <app_jwt>`
+### `POST /v1/app/live/start`
+Returns `410 Gone`.
 
-Current behavior:
-- Returns `410 Gone`
-- Detail points to device capture session/chunk/finalize APIs.
+### `WS /v1/stream/ws`
+Legacy websocket stream route; HTTP chunk-session APIs are the active capture path.
+
+## Error Envelope
+
+Errors are returned as:
+```json
+{"detail":"Error message"}
+```
+
+Common statuses: `400`, `401`, `403`, `404`, `409`, `410`, `413`, `503`.

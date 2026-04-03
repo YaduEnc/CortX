@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.db.session import SessionLocal
+from app.models.assistant import AIExtraction, AIExtractionStatus
 from app.models.capture import CaptureSession, SessionStatus
 from app.utils.time import utc_now
 
@@ -28,6 +29,7 @@ celery_app.conf.update(
     enable_utc=True,
     task_routes={
         "app.workers.tasks.process_session_transcription": {"queue": "transcription"},
+        "app.workers.tasks.process_session_ai_extraction": {"queue": "ai"},
         "app.workers.tasks.recover_stuck_transcriptions": {"queue": "transcription"},
     },
 )
@@ -80,11 +82,34 @@ def _requeue_backlog(sender=None, **_: object) -> None:
         for sid in queued_ids:
             celery_app.send_task("app.workers.tasks.process_session_transcription", args=[sid], queue="transcription")
 
-        if stale_ids or queued_ids:
+        ai_stale_cutoff = now - timedelta(minutes=5)
+        stale_ai = db.scalars(
+            select(AIExtraction.id).where(
+                AIExtraction.status == AIExtractionStatus.processing.value,
+                AIExtraction.started_at.is_not(None),
+                AIExtraction.started_at < ai_stale_cutoff,
+            )
+        ).all()
+        for extraction_id in stale_ai:
+            extraction = db.scalar(select(AIExtraction).where(AIExtraction.id == extraction_id))
+            if extraction:
+                extraction.status = AIExtractionStatus.queued.value
+                extraction.error_message = "recovered_from_stale_processing"
+
+        queued_ai = db.scalars(
+            select(AIExtraction.session_id).where(AIExtraction.status == AIExtractionStatus.queued.value).limit(100)
+        ).all()
+        db.commit()
+        for sid in queued_ai:
+            celery_app.send_task("app.workers.tasks.process_session_ai_extraction", args=[sid], queue="ai")
+
+        if stale_ids or queued_ids or stale_ai or queued_ai:
             logger.info(
-                "Transcription backlog recovery queued stale=%s queued=%s",
+                "Backlog recovery queued transcription(stale=%s queued=%s) ai(stale=%s queued=%s)",
                 len(stale_ids),
                 len(queued_ids),
+                len(stale_ai),
+                len(queued_ai),
             )
     except Exception:  # noqa: BLE001
         db.rollback()

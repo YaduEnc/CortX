@@ -36,11 +36,14 @@ flowchart LR
 | Backend | Recovery for stale transcribing sessions | Done | Worker startup requeues stale/pending sessions. |
 | Backend | Self-hosted Whisper model path support | Done | `WHISPER_MODEL_PATH` can point to local downloaded model directory. |
 | Backend | Whisper model download utility | Done | `scripts/download_whisper_model.py` downloads official `Systran/faster-whisper-*` locally. |
+| Backend | LM Studio AI extraction worker | Done | Auto extracts intent/plan/tasks/reminders after transcript completion. |
+| Backend | Assistant DB + APIs | Done | `ai_extractions`, `ai_items`, and app APIs for list/update/reprocess. |
 | Infra | Persistent model/cache volumes | Done | Docker volumes for HuggingFace cache and local whisper model files. |
 | iOS App | Device pairing UI | Done | Pair sheet scans, reads nonce, requests pair token, writes token to ESP32. |
 | iOS App | Saved audio list + playback | Done | Lists capture sessions and plays WAV from backend API. |
 | iOS App | Transcript UI integration | Done | Dashboard can load transcript per capture and show inline transcript text + metadata. |
 | iOS App | Auto refresh captures | Done | Dashboard polls captures periodically for near-live updates. |
+| iOS App | Assistant UI + item actions + Calendar export | Done | Shows intent/plan/tasks/reminders, updates status, and exports reminders to Apple Calendar. |
 
 ## Data Model (Current)
 
@@ -50,6 +53,8 @@ flowchart LR
 | `audio_chunks` | Raw PCM chunks per session | `audio_chunks.session_id -> capture_sessions.id` |
 | `transcripts` | One transcript row per session | `transcripts.session_id -> capture_sessions.id` (unique) |
 | `transcript_segments` | Time-aligned segment rows | `transcript_segments.transcript_id -> transcripts.id` |
+| `ai_extractions` | Per-transcript AI output status + intent/summary/plan | `ai_extractions.transcript_id -> transcripts.id` (unique) |
+| `ai_items` | Actionable task/reminder/plan-step items | `ai_items.extraction_id -> ai_extractions.id` |
 
 ## API Contract Direction
 Primary capture contract now:
@@ -59,6 +64,12 @@ Primary capture contract now:
 
 Compatibility route still present:
 - `POST /v1/device/captures/upload-wav`
+
+Assistant contract added:
+- `GET /v1/app/captures/{session_id}/ai`
+- `POST /v1/app/captures/{session_id}/ai/reprocess`
+- `GET /v1/app/assistant/items`
+- `PATCH /v1/app/assistant/items/{item_id}`
 
 ## Firmware Runtime Notes
 - Current chunk payload is constrained to backend limit (now effectively ~8s at 16k mono PCM16 when max is 256000 bytes).

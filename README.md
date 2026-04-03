@@ -1,118 +1,244 @@
-# SecondMind Backend (Device Direct DB Upload)
+# CortX (SecondMind) — Voice Memory Assistant
 
-Production-oriented backend + app pairing foundation for ESP32 device direct audio upload into PostgreSQL, local transcription, and app playback.
+CortX is a full-stack voice memory system:
+- ESP32 captures conversation audio and uploads it to backend.
+- Backend stores audio in PostgreSQL, transcribes locally with Whisper, and runs AI extraction via LM Studio.
+- iOS app shows each conversation as a memory card with transcript, intent, tasks, reminders, and Apple Calendar actions.
 
-## Live Context & Tracker
-- Detailed project tracker: `REDBY.md`
-- API contract freeze: `docs/api_contract_v1_freeze.md`
+## What Is Implemented (Current)
 
-## Stack
-- FastAPI (API)
-- PostgreSQL (captures/transcripts)
-- Redis + Celery (async transcription)
-- faster-whisper (self-hosted STT)
-- Docker Compose (runtime)
+### 1) Firmware + Device Ingestion
+- Device registration and auth with backend JWT.
+- Pairing flow (BLE token transfer + backend pairing APIs).
+- Continuous chunk capture pipeline:
+  - `start session` -> `upload ordered chunks` -> `finalize session`.
+- Compatibility full WAV upload endpoint still supported.
+- Chunk ordering and duplicate handling (ack/next sequence semantics).
 
-## High-Level Flow
+### 2) Backend Capture + Storage
+- FastAPI v1 API for app/device/pairing/health.
+- PostgreSQL as primary store for:
+  - capture sessions
+  - audio chunks
+  - finalized WAV blob
+  - transcripts
+  - AI extraction results and actionable items
+- Finalization assembler converts ordered chunks into final WAV.
+
+### 3) Transcription Worker
+- Celery worker queue for transcription.
+- Local `faster-whisper` support.
+- Configurable model size/path (self-hosted model path supported).
+- Retry/backoff and stale-session recovery logic for reliability.
+
+### 4) AI Assistant Pipeline (LM Studio)
+- Auto-triggered after transcript completion.
+- Calls LM Studio OpenAI-compatible chat-completions endpoint.
+- Strict JSON validation before persisting extraction output.
+- Stores:
+  - intent + confidence
+  - summary
+  - plan steps
+  - task/reminder items
+- Manual reprocess endpoint for any capture.
+
+### 5) iOS App UX
+- Auth, forgot/reset password, account deletion.
+- Device list + pairing UI.
+- Memory Dashboard:
+  - each capture shown as one memory card
+  - tap memory to open detail sheet
+  - one-tap iPhone mic capture (start/stop) with direct backend upload
+- Memory Detail:
+  - audio playback
+  - transcript
+  - AI brief (intent/summary/confidence)
+  - task and reminder actions
+  - calendar event creation via EventKit
+
+### 6) Daily Summary + Profile + Device Management
+- Dashboard "Today Snapshot" card with:
+  - deterministic daily headline
+  - key metrics (memories, due actions/reminders, upcoming)
+  - focus items (top actionable items)
+  - optional per-device filter (default all paired devices)
+- Profile controls:
+  - editable full name
+  - timezone preference
+  - daily summary / reminder notifications / calendar export toggles
+- Device management + health:
+  - alias rename
+  - unpair action
+  - network profile push
+  - health status derived from `last_seen_at` (`online | recently_active | offline`)
+  - firmware version and last capture visibility in app
+
+## End-to-End Flow
+
 ```mermaid
 flowchart LR
-  A["ESP32"] -->|"pair + capture chunks"| B["FastAPI"]
-  B -->|"audio + metadata"| C["PostgreSQL"]
-  B -->|"enqueue transcription"| D["Celery/Redis"]
-  D -->|"local Whisper"| C
-  E["iOS App"] -->|"captures/audio/transcript"| B
+  A["ESP32 Recorder"] -->|"POST /v1/device/auth"| B["FastAPI"]
+  A -->|"POST /v1/device/capture/sessions"| B
+  A -->|"POST /v1/device/capture/chunks"| B
+  A -->|"POST /v1/device/capture/sessions/{id}/finalize"| B
+  B -->|"assemble + store WAV"| C["PostgreSQL"]
+  B -->|"enqueue transcription"| D["Celery transcription queue"]
+  D -->|"faster-whisper"| C
+  D -->|"enqueue AI extraction"| E["Celery ai queue"]
+  E -->|"LM Studio /v1/chat/completions"| F["LM Studio"]
+  E -->|"ai_extractions + ai_items"| C
+  G["iOS App"] -->|"/v1/app/captures + /audio + /transcript + /ai"| B
+  G -->|"PATCH /v1/app/assistant/items"| B
+  G -->|"EventKit"| H["Apple Calendar"]
 ```
 
-## Current Feature Tracker
+## Tech Stack
+- API: FastAPI
+- DB: PostgreSQL
+- Queue: Redis + Celery
+- STT: faster-whisper (local/self-hosted)
+- AI extraction: LM Studio (OpenAI-compatible API)
+- App: SwiftUI (iOS)
+- Infra runtime: Docker Compose
 
-| Feature | Status |
-|---|---|
-| BLE pairing (app <-> ESP32 <-> backend) | Done |
-| Continuous chunk upload (ping-pong buffers) | Done |
-| Rolling auto-finalize session upload | Done |
-| DB-stored WAV playback via API | Done |
-| In-app transcript fetch + display | Done |
-| Local faster-whisper transcription worker | Done |
-| Retry + stale-session recovery for transcription | Done |
-| Self-hosted Whisper model path support | Done |
+## Repository Map
+- Backend API: `app/api/v1/`
+- Worker tasks: `app/workers/tasks.py`
+- AI services: `app/services/assistant_llm.py`, `app/services/assistant_pipeline.py`
+- DB models: `app/models/`
+- iOS app: `CortxApp/CortxApp/`
+- Firmware: `firmware/arduino_ide/`
+- Migrations/docs: `docs/`
+- Progress tracker: `REDBY.md`
 
-## Progress Snapshot (2026-04-03)
-- Firmware now performs continuous chunk capture with rolling auto-finalize, so finalized sessions are produced automatically without manual stop.
-- Backend assembles chunk sessions into WAV, stores audio in PostgreSQL, then queues transcription via Celery.
-- Worker now includes retry/backoff and stale-session recovery to reduce stuck transcription states.
-- Whisper can run from local self-hosted model path (`WHISPER_MODEL_PATH`) so transcription is fully local to your stack.
-- iOS dashboard now supports transcript loading and inline transcript display per capture.
+## Required Environment Variables
 
-## API Logic (Capture + Transcription)
-1. Device auth:
-`POST /v1/device/auth`
-2. Start capture session:
-`POST /v1/device/capture/sessions`
-3. Upload ordered chunks:
-`POST /v1/device/capture/chunks`
-4. Finalize session:
-`POST /v1/device/capture/sessions/{session_id}/finalize`
-5. Backend queues transcription job for session id.
-6. App fetches capture list:
-`GET /v1/app/captures`
-7. App fetches audio:
-`GET /v1/app/captures/{session_id}/audio`
-8. App fetches transcript:
-`GET /v1/app/captures/{session_id}/transcript`
+Core:
+- `DATABASE_URL`
+- `REDIS_URL`
+- `JWT_SECRET`
+- `JWT_EXPIRES_MINUTES`
+- `ADMIN_BOOTSTRAP_KEY`
 
-## Quick Start
-1. Create env file:
+Capture/limits:
+- `MAX_CHUNK_BYTES` (backend hard limit per chunk)
+- `MAX_DB_AUDIO_BYTES`
+
+Whisper:
+- `WHISPER_MODEL_SIZE` (e.g. `small`)
+- `WHISPER_MODEL_PATH` (recommended for self-hosted local model files)
+
+LM Studio:
+- `LMSTUDIO_BASE_URL` (Docker + host LM Studio: `http://host.docker.internal:1234/v1`)
+- `LMSTUDIO_MODEL`
+- `LMSTUDIO_API_KEY` (optional)
+- `LMSTUDIO_TIMEOUT_SECONDS`
+- `LMSTUDIO_TEMPERATURE` (set `0` for deterministic extraction)
+
+## Local Development
+
+### 1) Start backend stack
 ```bash
 cp .env.example .env
-```
-2. Start stack:
-```bash
-docker compose up --build
-```
-3. API base URL:
-```text
-http://localhost:8000/v1
+docker compose up -d --build api worker redis postgres
 ```
 
-## Self-Hosted Whisper Model (Recommended)
-Use your own local Whisper model files so transcription does not depend on runtime model fetches.
-
-1. Download model once into shared Docker model volume:
+### 2) Run DB migrations (manual SQL docs)
+- Audio storage migration (if needed):
 ```bash
-docker compose run --rm api python scripts/download_whisper_model.py --model-size small --output-dir /models
+docs/postgres_audio_storage_migration.sql
 ```
-2. Set in `.env`:
-```env
-WHISPER_MODEL_PATH=/models/faster-whisper-small
-```
-3. Restart worker:
+- AI assistant migration:
 ```bash
-docker compose up -d worker
+docs/postgres_ai_assistant_migration.sql
+```
+- Daily summary/profile/device migration:
+```bash
+docs/postgres_daily_summary_profile_device_migration.sql
 ```
 
-## Core Endpoints
-- `GET /v1/health`
+Apply using your preferred DB tool or `psql` inside container.
+
+### 3) Verify API health
+```bash
+curl http://localhost:8000/v1/health
+curl http://localhost:8000/v1/health/ai-metrics
+```
+
+### 4) Build iOS app
+- Open `CortxApp/CortxApp.xcodeproj` in Xcode and run simulator.
+
+## Pairing + Capture Test Checklist
+
+1. Register/login in app.
+2. Start pairing from app UI.
+3. On firmware, enter pairing mode.
+4. Complete BLE token transfer; verify device appears in `GET /v1/app/devices`.
+5. Start capture stream on firmware.
+6. Verify session progression:
+   - receiving -> queued -> transcribing -> done
+7. In app dashboard:
+   - memory card appears
+   - audio plays
+   - transcript loads
+   - AI brief loads
+   - tasks/reminders can be updated
+   - reminder can be added to Apple Calendar
+
+## APIs Currently Used In Product
+
+### App Auth + Account
 - `POST /v1/app/register`
 - `POST /v1/app/auth`
+- `GET /v1/app/me`
+- `PATCH /v1/app/me`
+- `GET /v1/app/me/preferences`
+- `PATCH /v1/app/me/preferences`
+- `POST /v1/app/password/forgot/request`
+- `POST /v1/app/password/forgot/confirm`
+- `POST /v1/app/me/delete`
+
+### Pairing
+- `POST /v1/pairing/start`
+- `POST /v1/device/pairing/complete`
 - `GET /v1/app/devices`
-- `GET /v1/app/captures`
-- `GET /v1/app/captures/{session_id}/audio`
-- `GET /v1/app/captures/{session_id}/transcript`
-- `POST /v1/device/register` (requires `X-Admin-Key`)
+- `PATCH /v1/app/devices/{device_id}`
+- `DELETE /v1/app/devices/{device_id}`
+- `POST /v1/app/devices/{device_id}/network-profile`
+
+### Device Capture
+- `POST /v1/device/register` (admin bootstrap)
 - `POST /v1/device/auth`
+- `POST /v1/device/heartbeat`
 - `POST /v1/device/capture/sessions`
 - `POST /v1/device/capture/chunks`
 - `POST /v1/device/capture/sessions/{session_id}/finalize`
-- `POST /v1/pairing/start`
-- `POST /v1/device/pairing/complete`
+- `POST /v1/device/captures/upload-wav` (compat route)
 
-## Team Guides
-- IoT: `docs/iot_pairing_guide.md`
-- BLE gateway: `docs/ble_phone_gateway_flow.md`
-- App pairing API: `docs/app_pairing_api_flow.md`
-- Deployment: `docs/cloudflare_tunnel_deploy_hamza.md`
-- Firmware: `firmware/arduino_ide/SecondMindESP32S3/README_ARDUINO.md`
+### App Memory + Assistant
+- `POST /v1/app/captures/upload-wav`
+- `GET /v1/app/dashboard/daily-summary`
+- `GET /v1/app/captures`
+- `GET /v1/app/captures/{session_id}/audio`
+- `GET /v1/app/captures/{session_id}/transcript`
+- `GET /v1/app/captures/{session_id}/ai`
+- `POST /v1/app/captures/{session_id}/ai/reprocess`
+- `GET /v1/app/assistant/items`
+- `PATCH /v1/app/assistant/items/{item_id}`
+
+### Health / Observability
+- `GET /v1/health`
+- `GET /v1/health/ai-metrics`
 
 ## Notes
-- Capture and transcript schema are DB-first for reliable retrieval.
-- For long-term production lifecycle management, keep using migrations and retention policies.
+- Live packet API (`/v1/app/live/start`) is deprecated and returns `410`.
+- Stream websocket route exists for legacy path but current product flow uses device capture session chunk APIs.
+- API contract reference: `docs/api_contract_v1_freeze.md`.
+
+## Useful Docs
+- API contract (active): `docs/api_contract_v1_freeze.md`
+- AI migration SQL: `docs/postgres_ai_assistant_migration.sql`
+- Daily summary/profile/device migration SQL: `docs/postgres_daily_summary_profile_device_migration.sql`
+- Audio storage migration SQL: `docs/postgres_audio_storage_migration.sql`
+- Firmware notes: `firmware/arduino_ide/SecondMindESP32S3/README_ARDUINO.md`
+- Progress log: `REDBY.md`

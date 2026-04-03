@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -66,3 +68,14 @@ class DeviceCaptureFinalizeResponse(BaseModel):
     status: str
     total_chunks: int
     queued_for_transcription: bool
+
+
+class DeviceHeartbeatRequest(BaseModel):
+    firmware_version: str | None = Field(default=None, max_length=64)
+
+
+class DeviceHeartbeatResponse(BaseModel):
+    status: str
+    device_id: str
+    last_seen_at: datetime
+    firmware_version: str | None

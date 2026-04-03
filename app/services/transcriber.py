@@ -35,6 +35,7 @@ class LocalWhisperTranscriber:
             vad_filter=vad_filter,
             beam_size=beam_size,
             language=language,
+            initial_prompt="The following is a conversation in English, Hindi, or Hinglish. Extracts tasks and reminders correctly.",
             condition_on_previous_text=False,
         )
 

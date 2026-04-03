@@ -1,8 +1,9 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import secrets
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import delete, select
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Response, status
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import selectinload
 
@@ -10,18 +11,37 @@ from app.api.deps import get_current_app_user
 from app.core.config import get_settings
 from app.core.security import create_app_access_token, hash_pair_token, hash_secret, verify_secret
 from app.db.session import get_db
+from app.models.assistant import AIExtraction, AIItem, AIItemStatus
 from app.models.capture import CaptureSession, SessionStatus
 from app.models.app_user import AppUser
 from app.models.device import Device
 from app.models.pairing import DeviceUserBinding, PairingSession
 from app.models.password_reset import AppPasswordResetToken
+from app.models.user_preferences import AppUserPreferences
 from app.models.transcript import Transcript
+from app.schemas.assistant import (
+    AppAssistantItemResponse,
+    AppAssistantItemUpdateRequest,
+    AppCaptureAIExtractionResponse,
+    AppCaptureAIReprocessResponse,
+    AppCaptureAIResponse,
+)
 from app.services.network_profiles import NETWORK_PROFILE_TTL_SECONDS, queue_network_profile
+from app.services.assistant_pipeline import AssistantPipelineError, prepare_extraction_record
 from app.services.storage import get_storage
 from app.schemas.app_user import (
     AppActionStatusResponse,
+    AppDailySummaryDeviceBreakdown,
+    AppDailySummaryFocusItem,
+    AppDailySummaryMetrics,
+    AppDailySummaryResponse,
     AppCaptureListItemResponse,
+    AppCaptureUploadResponse,
     AppMeResponse,
+    AppMeUpdateRequest,
+    AppUserPreferencesResponse,
+    AppUserPreferencesUpdateRequest,
+    AppDeviceUpdateRequest,
     AppCaptureTranscriptResponse,
     AppAuthRequest,
     AppDeleteAccountRequest,
@@ -33,8 +53,147 @@ from app.schemas.app_user import (
     PairedDeviceResponse,
 )
 from app.schemas.network import AppQueueNetworkProfileRequest, AppQueueNetworkProfileResponse
+from app.schemas.entity import (
+    EntityConnectionResponse,
+    EntityMentionResponse,
+    EntityResponse,
+    IdeaGraphResponse,
+)
+from app.models.entity import Entity, EntityMention
+from app.utils.time import utc_now
+from app.workers.celery_app import celery_app
+from fastapi.responses import StreamingResponse
+import io
 
 router = APIRouter(prefix="/app", tags=["app"])
+
+
+def _device_status(last_seen_at: datetime | None, now: datetime) -> str:
+    if last_seen_at is None:
+        return "offline"
+    age = now - last_seen_at
+    if age <= timedelta(minutes=2):
+        return "online"
+    if age <= timedelta(minutes=30):
+        return "recently_active"
+    return "offline"
+
+
+def _get_or_create_preferences(db: Session, user_id: str) -> AppUserPreferences:
+    prefs = db.scalar(select(AppUserPreferences).where(AppUserPreferences.user_id == user_id))
+    if prefs:
+        return prefs
+    prefs = AppUserPreferences(user_id=user_id)
+    db.add(prefs)
+    db.commit()
+    db.refresh(prefs)
+    return prefs
+
+
+def _resolve_timezone(tz_name: str | None) -> tuple[ZoneInfo, str]:
+    if not tz_name:
+        return ZoneInfo("UTC"), "UTC"
+    candidate = tz_name.strip()
+    if not candidate:
+        return ZoneInfo("UTC"), "UTC"
+    try:
+        return ZoneInfo(candidate), candidate
+    except Exception:  # noqa: BLE001
+        return ZoneInfo("UTC"), "UTC"
+
+
+def _enqueue_transcription(session: CaptureSession, db: Session) -> None:
+    try:
+        celery_app.send_task("app.workers.tasks.process_session_transcription", args=[session.id], queue="transcription")
+    except Exception as exc:  # noqa: BLE001
+        session.status = SessionStatus.failed.value
+        session.error_message = f"Failed to enqueue transcription: {exc}"
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Capture stored, but transcription queue is unavailable",
+        ) from exc
+
+
+def _get_or_create_ios_app_device(db: Session, user: AppUser) -> Device:
+    device_code = f"ios-app-{user.id}"
+    now = utc_now()
+
+    device = db.scalar(select(Device).where(Device.device_code == device_code))
+    if not device:
+        device = Device(
+            device_code=device_code,
+            secret_hash=hash_secret(secrets.token_urlsafe(24)),
+            is_active=True,
+            firmware_version="ios-app",
+            last_seen_at=now,
+        )
+        db.add(device)
+        db.flush()
+
+    binding = db.scalar(
+        select(DeviceUserBinding).where(
+            DeviceUserBinding.device_id == device.id,
+            DeviceUserBinding.user_id == user.id,
+        )
+    )
+    if not binding:
+        db.add(
+            DeviceUserBinding(
+                device_id=device.id,
+                user_id=user.id,
+                alias="iPhone Mic",
+                is_active=True,
+            )
+        )
+    elif not binding.is_active:
+        binding.is_active = True
+
+    device.last_seen_at = now
+    if not device.firmware_version:
+        device.firmware_version = "ios-app"
+
+    return device
+
+
+def _map_ai_item(item: AIItem) -> AppAssistantItemResponse:
+    return AppAssistantItemResponse(
+        item_id=item.id,
+        extraction_id=item.extraction_id,
+        session_id=item.session_id,
+        transcript_id=item.transcript_id,
+        item_type=item.item_type,
+        title=item.title,
+        details=item.details,
+        due_at=item.due_at,
+        timezone=item.timezone,
+        priority=item.priority,
+        status=item.status,
+        source_segment_start_seconds=item.source_segment_start_seconds,
+        source_segment_end_seconds=item.source_segment_end_seconds,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+        completed_at=item.completed_at,
+    )
+
+
+def _map_ai_extraction(extraction: AIExtraction) -> AppCaptureAIExtractionResponse:
+    return AppCaptureAIExtractionResponse(
+        extraction_id=extraction.id,
+        session_id=extraction.session_id,
+        transcript_id=extraction.transcript_id,
+        status=extraction.status,
+        intent=extraction.intent,
+        intent_confidence=extraction.intent_confidence,
+        summary=extraction.summary,
+        plan_steps=extraction.plan_json or [],
+        model_name=extraction.model_name,
+        error_message=extraction.error_message,
+        created_at=extraction.created_at,
+        started_at=extraction.started_at,
+        completed_at=extraction.completed_at,
+        updated_at=extraction.updated_at,
+    )
 
 
 @router.post("/register", response_model=AppTokenResponse, status_code=status.HTTP_201_CREATED)
@@ -49,6 +208,8 @@ def register_app_user(payload: AppRegisterRequest, db: Session = Depends(get_db)
     db.add(user)
     db.commit()
     db.refresh(user)
+    db.add(AppUserPreferences(user_id=user.id))
+    db.commit()
 
     settings = get_settings()
     token = create_app_access_token(user.id)
@@ -159,6 +320,69 @@ def get_current_app_user_profile(
     )
 
 
+@router.patch("/me", response_model=AppMeResponse)
+def update_current_app_user_profile(
+    payload: AppMeUpdateRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppMeResponse:
+    if payload.full_name is not None:
+        value = payload.full_name.strip()
+        user.full_name = value or None
+    db.commit()
+    db.refresh(user)
+    return AppMeResponse(
+        user_id=user.id,
+        email=user.email,
+        full_name=user.full_name,
+        created_at=user.created_at,
+    )
+
+
+@router.get("/me/preferences", response_model=AppUserPreferencesResponse)
+def get_current_app_user_preferences(
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppUserPreferencesResponse:
+    prefs = _get_or_create_preferences(db, user.id)
+    return AppUserPreferencesResponse(
+        timezone=prefs.timezone,
+        daily_summary_enabled=prefs.daily_summary_enabled,
+        reminder_notifications_enabled=prefs.reminder_notifications_enabled,
+        calendar_export_default_enabled=prefs.calendar_export_default_enabled,
+        updated_at=prefs.updated_at,
+    )
+
+
+@router.patch("/me/preferences", response_model=AppUserPreferencesResponse)
+def update_current_app_user_preferences(
+    payload: AppUserPreferencesUpdateRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppUserPreferencesResponse:
+    prefs = _get_or_create_preferences(db, user.id)
+
+    if payload.timezone is not None:
+        _, normalized = _resolve_timezone(payload.timezone)
+        prefs.timezone = normalized
+    if payload.daily_summary_enabled is not None:
+        prefs.daily_summary_enabled = payload.daily_summary_enabled
+    if payload.reminder_notifications_enabled is not None:
+        prefs.reminder_notifications_enabled = payload.reminder_notifications_enabled
+    if payload.calendar_export_default_enabled is not None:
+        prefs.calendar_export_default_enabled = payload.calendar_export_default_enabled
+
+    db.commit()
+    db.refresh(prefs)
+    return AppUserPreferencesResponse(
+        timezone=prefs.timezone,
+        daily_summary_enabled=prefs.daily_summary_enabled,
+        reminder_notifications_enabled=prefs.reminder_notifications_enabled,
+        calendar_export_default_enabled=prefs.calendar_export_default_enabled,
+        updated_at=prefs.updated_at,
+    )
+
+
 @router.post("/me/delete", response_model=AppActionStatusResponse)
 def delete_current_app_user(
     payload: AppDeleteAccountRequest,
@@ -190,15 +414,97 @@ def list_user_devices(
         .order_by(DeviceUserBinding.paired_at.desc())
     ).all()
 
+    device_ids = [device.id for _, device in rows]
+    last_capture_by_device: dict[str, datetime] = {}
+    if device_ids:
+        capture_rows = db.execute(
+            select(CaptureSession.device_id, func.max(CaptureSession.started_at))
+            .where(CaptureSession.device_id.in_(device_ids))
+            .group_by(CaptureSession.device_id)
+        ).all()
+        last_capture_by_device = {
+            device_id: last_capture
+            for device_id, last_capture in capture_rows
+            if last_capture is not None
+        }
+
+    now = utc_now()
     return [
         PairedDeviceResponse(
             device_id=device.id,
             device_code=device.device_code,
             alias=binding.alias,
             paired_at=binding.paired_at,
+            last_seen_at=device.last_seen_at,
+            status=_device_status(device.last_seen_at, now),
+            firmware_version=device.firmware_version,
+            last_capture_at=last_capture_by_device.get(device.id),
         )
         for binding, device in rows
     ]
+
+
+@router.patch("/devices/{device_id}", response_model=PairedDeviceResponse)
+def update_user_device(
+    device_id: str,
+    payload: AppDeviceUpdateRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> PairedDeviceResponse:
+    row = db.execute(
+        select(DeviceUserBinding, Device)
+        .join(Device, Device.id == DeviceUserBinding.device_id)
+        .where(
+            DeviceUserBinding.device_id == device_id,
+            DeviceUserBinding.user_id == user.id,
+            DeviceUserBinding.is_active.is_(True),
+        )
+    ).first()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paired device not found")
+
+    binding, device = row
+    if payload.alias is not None:
+        binding.alias = payload.alias.strip() if payload.alias.strip() else None
+    db.commit()
+    db.refresh(binding)
+    db.refresh(device)
+
+    last_capture_at = db.scalar(
+        select(func.max(CaptureSession.started_at)).where(CaptureSession.device_id == device.id)
+    )
+
+    return PairedDeviceResponse(
+        device_id=device.id,
+        device_code=device.device_code,
+        alias=binding.alias,
+        paired_at=binding.paired_at,
+        last_seen_at=device.last_seen_at,
+        status=_device_status(device.last_seen_at, utc_now()),
+        firmware_version=device.firmware_version,
+        last_capture_at=last_capture_at,
+    )
+
+
+@router.delete("/devices/{device_id}", response_model=AppActionStatusResponse)
+def unpair_user_device(
+    device_id: str,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppActionStatusResponse:
+    binding = db.scalar(
+        select(DeviceUserBinding).where(
+            DeviceUserBinding.device_id == device_id,
+            DeviceUserBinding.user_id == user.id,
+            DeviceUserBinding.is_active.is_(True),
+        )
+    )
+    if not binding:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paired device not found")
+
+    binding.is_active = False
+    db.commit()
+    return AppActionStatusResponse(status="unpaired", message="Device unpaired")
 
 
 @router.post("/live/start")
@@ -237,6 +543,257 @@ def queue_device_network_profile(
         source=payload.source.strip() or "app_manual",
     )
     return AppQueueNetworkProfileResponse(status="queued", expires_in_seconds=NETWORK_PROFILE_TTL_SECONDS)
+
+
+@router.get("/dashboard/daily-summary", response_model=AppDailySummaryResponse)
+def get_dashboard_daily_summary(
+    summary_date: str | None = Query(default=None, alias="date"),
+    tz: str | None = None,
+    device_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppDailySummaryResponse:
+    prefs = _get_or_create_preferences(db, user.id)
+    tzinfo, tz_name = _resolve_timezone(tz or prefs.timezone)
+
+    if summary_date:
+        try:
+            selected_date = date.fromisoformat(summary_date)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="date must be YYYY-MM-DD") from exc
+    else:
+        selected_date = utc_now().astimezone(tzinfo).date()
+
+    day_start_local = datetime.combine(selected_date, time.min, tzinfo=tzinfo)
+    day_end_local = datetime.combine(selected_date, time.max, tzinfo=tzinfo)
+    day_start_utc = day_start_local.astimezone(timezone.utc)
+    day_end_utc = day_end_local.astimezone(timezone.utc)
+    now_utc = utc_now()
+    next_24h_utc = now_utc + timedelta(hours=24)
+
+    device_rows = db.execute(
+        select(DeviceUserBinding, Device)
+        .join(Device, Device.id == DeviceUserBinding.device_id)
+        .where(DeviceUserBinding.user_id == user.id, DeviceUserBinding.is_active.is_(True))
+    ).all()
+    if not device_rows:
+        return AppDailySummaryResponse(
+            date=selected_date.isoformat(),
+            timezone=tz_name,
+            headline="No paired devices yet. Pair a device to start collecting memories.",
+            generated_at=utc_now(),
+            metrics=AppDailySummaryMetrics(
+                memories_count=0,
+                transcript_ready_count=0,
+                open_actions_due_count=0,
+                upcoming_events_count=0,
+                top_intent=None,
+                device_count=0,
+            ),
+            focus_items=[],
+            device_breakdown=[],
+        )
+
+    active_device_ids = {device.id for _, device in device_rows}
+    if device_id:
+        if device_id not in active_device_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paired device not found")
+        scoped_device_ids = {device_id}
+    else:
+        scoped_device_ids = active_device_ids
+
+    device_code_by_id = {device.id: device.device_code for _, device in device_rows}
+
+    session_rows = db.execute(
+        select(CaptureSession.id, CaptureSession.device_id)
+        .where(
+            CaptureSession.device_id.in_(scoped_device_ids),
+            CaptureSession.started_at >= day_start_utc,
+            CaptureSession.started_at <= day_end_utc,
+        )
+    ).all()
+    session_ids = [session_id for session_id, _ in session_rows]
+    session_device_map = {session_id: device_id_value for session_id, device_id_value in session_rows}
+
+    transcript_ready_ids: set[str] = set()
+    if session_ids:
+        transcript_rows = db.execute(
+            select(Transcript.session_id).where(Transcript.session_id.in_(session_ids))
+        ).all()
+        transcript_ready_ids = {row[0] for row in transcript_rows}
+
+    top_intent: str | None = None
+    if session_ids:
+        top_intent_row = db.execute(
+            select(AIExtraction.intent, func.count(AIExtraction.id).label("intent_count"))
+            .where(
+                AIExtraction.user_id == user.id,
+                AIExtraction.session_id.in_(session_ids),
+                AIExtraction.intent.is_not(None),
+                AIExtraction.intent != "",
+            )
+            .group_by(AIExtraction.intent)
+            .order_by(func.count(AIExtraction.id).desc())
+            .limit(1)
+        ).first()
+        if top_intent_row:
+            top_intent = top_intent_row[0]
+
+    open_items_rows = db.execute(
+        select(AIItem, CaptureSession.device_id)
+        .join(CaptureSession, CaptureSession.id == AIItem.session_id)
+        .where(
+            AIItem.user_id == user.id,
+            CaptureSession.device_id.in_(scoped_device_ids),
+            AIItem.status.in_(["open", "snoozed"]),
+        )
+    ).all()
+
+    open_actions_due_count = 0
+    open_reminders_due_count = 0
+    upcoming_events_count = 0
+
+    by_device_memories: dict[str, int] = {did: 0 for did in scoped_device_ids}
+    by_device_transcripts: dict[str, int] = {did: 0 for did in scoped_device_ids}
+    by_device_open_actions: dict[str, int] = {did: 0 for did in scoped_device_ids}
+    by_device_upcoming: dict[str, int] = {did: 0 for did in scoped_device_ids}
+
+    for _, device_id_value in session_rows:
+        by_device_memories[device_id_value] = by_device_memories.get(device_id_value, 0) + 1
+    for session_id in transcript_ready_ids:
+        mapped_device = session_device_map.get(session_id)
+        if mapped_device:
+            by_device_transcripts[mapped_device] = by_device_transcripts.get(mapped_device, 0) + 1
+
+    focus_candidates: list[tuple[datetime, AIItem, str]] = []
+    for item, item_device_id in open_items_rows:
+        due = item.due_at
+        if due is not None and due <= day_end_utc:
+            if item.item_type == "reminder":
+                open_reminders_due_count += 1
+            else:
+                open_actions_due_count += 1
+                by_device_open_actions[item_device_id] = by_device_open_actions.get(item_device_id, 0) + 1
+
+        if due is not None and due >= now_utc and due <= next_24h_utc:
+            upcoming_events_count += 1
+            by_device_upcoming[item_device_id] = by_device_upcoming.get(item_device_id, 0) + 1
+
+        sort_due = due or datetime.max.replace(tzinfo=timezone.utc)
+        focus_candidates.append((sort_due, item, item_device_id))
+
+    focus_candidates.sort(key=lambda entry: (entry[0], entry[1].created_at))
+    focus_items = [
+        AppDailySummaryFocusItem(
+            item_id=item.id,
+            item_type=item.item_type,
+            title=item.title,
+            due_at=item.due_at,
+            status=item.status,
+            session_id=item.session_id,
+            device_code=device_code_by_id.get(item_device_id),
+        )
+        for _, item, item_device_id in focus_candidates[:3]
+    ]
+
+    memories_count = len(session_ids)
+    transcript_ready_count = len(transcript_ready_ids)
+    device_count = len(scoped_device_ids)
+
+    if memories_count == 0:
+        headline = "No memories for this day yet. Start recording from your paired device."
+    else:
+        intent_phrase = f" Top intent: {top_intent}." if top_intent else ""
+        headline = (
+            f"Today you captured {memories_count} memories across {device_count} device"
+            f"{'' if device_count == 1 else 's'}.{intent_phrase} "
+            f"You have {open_actions_due_count + open_reminders_due_count} due actions/reminders and "
+            f"{upcoming_events_count} upcoming events."
+        )
+
+    breakdown = [
+        AppDailySummaryDeviceBreakdown(
+            device_id=did,
+            device_code=device_code_by_id.get(did, did),
+            memories_count=by_device_memories.get(did, 0),
+            transcript_ready_count=by_device_transcripts.get(did, 0),
+            open_action_count=by_device_open_actions.get(did, 0),
+            upcoming_event_count=by_device_upcoming.get(did, 0),
+        )
+        for did in sorted(scoped_device_ids, key=lambda value: device_code_by_id.get(value, value))
+    ]
+
+    return AppDailySummaryResponse(
+        date=selected_date.isoformat(),
+        timezone=tz_name,
+        headline=headline,
+        generated_at=utc_now(),
+        metrics=AppDailySummaryMetrics(
+            memories_count=memories_count,
+            transcript_ready_count=transcript_ready_count,
+            open_actions_due_count=open_actions_due_count + open_reminders_due_count,
+            upcoming_events_count=upcoming_events_count,
+            top_intent=top_intent,
+            device_count=device_count,
+        ),
+        focus_items=focus_items,
+        device_breakdown=breakdown,
+    )
+
+
+@router.post("/captures/upload-wav", response_model=AppCaptureUploadResponse, status_code=status.HTTP_201_CREATED)
+def upload_app_capture_wav(
+    wav_bytes: bytes = Body(..., media_type="audio/wav"),
+    x_sample_rate: int = Header(default=16000),
+    x_channels: int = Header(default=1),
+    x_codec: str = Header(default="pcm16le"),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppCaptureUploadResponse:
+    settings = get_settings()
+
+    if len(wav_bytes) < 44:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="WAV payload is too small")
+    if len(wav_bytes) > settings.max_db_audio_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"WAV payload exceeds {settings.max_db_audio_bytes} bytes",
+        )
+    if x_sample_rate < 8000 or x_sample_rate > 48000:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="X-Sample-Rate must be between 8000 and 48000")
+    if x_channels < 1 or x_channels > 2:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="X-Channels must be 1 or 2")
+
+    codec = x_codec.strip().lower() or "pcm16le"
+    device = _get_or_create_ios_app_device(db, user)
+
+    session = CaptureSession(
+        device_id=device.id,
+        status=SessionStatus.queued.value,
+        sample_rate=x_sample_rate,
+        channels=x_channels,
+        codec=codec,
+        total_chunks=1,
+        audio_blob_wav=wav_bytes,
+        audio_blob_content_type="audio/wav",
+        audio_blob_size_bytes=len(wav_bytes),
+        finalized_at=utc_now(),
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+
+    _enqueue_transcription(session, db)
+
+    return AppCaptureUploadResponse(
+        session_id=session.id,
+        status=session.status,
+        queued_for_transcription=True,
+        audio_size_bytes=len(wav_bytes),
+        sample_rate=session.sample_rate,
+        channels=session.channels,
+        codec=session.codec,
+    )
 
 
 @router.get("/captures", response_model=list[AppCaptureListItemResponse])
@@ -334,7 +891,7 @@ def stream_user_capture_audio(
             "Content-Disposition": f'inline; filename="{session.id}.wav"',
             "Cache-Control": "no-store",
         }
-        return Response(content=bytes(session.audio_blob_wav), media_type="audio/wav", headers=headers)
+        return StreamingResponse(io.BytesIO(session.audio_blob_wav), media_type="audio/wav", headers=headers)
 
     if not session.assembled_object_key:
         if session.status in {SessionStatus.receiving.value, SessionStatus.queued.value, SessionStatus.transcribing.value}:
@@ -347,3 +904,333 @@ def stream_user_capture_audio(
         "Cache-Control": "no-store",
     }
     return Response(content=audio_bytes, media_type="audio/wav", headers=headers)
+
+
+@router.get("/captures/{session_id}/ai", response_model=AppCaptureAIResponse)
+def get_user_capture_ai(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppCaptureAIResponse:
+    session = db.scalar(
+        select(CaptureSession)
+        .join(
+            DeviceUserBinding,
+            (DeviceUserBinding.device_id == CaptureSession.device_id)
+            & (DeviceUserBinding.user_id == user.id)
+            & (DeviceUserBinding.is_active.is_(True)),
+        )
+        .where(CaptureSession.id == session_id)
+        .options(selectinload(CaptureSession.transcript))
+    )
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    transcript = session.transcript
+    if not transcript:
+        return AppCaptureAIResponse(
+            session_id=session.id,
+            transcript_ready=False,
+            extraction=None,
+            items=[],
+        )
+
+    extraction = db.scalar(select(AIExtraction).where(AIExtraction.transcript_id == transcript.id))
+    if not extraction:
+        return AppCaptureAIResponse(
+            session_id=session.id,
+            transcript_ready=True,
+            extraction=None,
+            items=[],
+        )
+
+    items = db.scalars(
+        select(AIItem).where(AIItem.extraction_id == extraction.id).order_by(AIItem.created_at.asc())
+    ).all()
+    return AppCaptureAIResponse(
+        session_id=session.id,
+        transcript_ready=True,
+        extraction=_map_ai_extraction(extraction),
+        items=[_map_ai_item(item) for item in items],
+    )
+
+
+@router.get("/assistant/items", response_model=list[AppAssistantItemResponse])
+def list_user_assistant_items(
+    item_type: str | None = None,
+    item_status: str | None = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> list[AppAssistantItemResponse]:
+    capped_limit = max(1, min(limit, 200))
+
+    allowed_types = {"task", "reminder", "plan_step"}
+    allowed_status = {"open", "done", "dismissed", "snoozed"}
+
+    normalized_type = item_type.strip().lower() if item_type else None
+    normalized_status = item_status.strip().lower() if item_status else None
+
+    if normalized_type and normalized_type not in allowed_types:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid item_type")
+    if normalized_status and normalized_status not in allowed_status:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid item_status")
+
+    query = select(AIItem).where(AIItem.user_id == user.id)
+    if normalized_type:
+        query = query.where(AIItem.item_type == normalized_type)
+    if normalized_status:
+        query = query.where(AIItem.status == normalized_status)
+
+    rows = db.scalars(
+        query.order_by(
+            AIItem.due_at.is_(None),
+            AIItem.due_at.asc(),
+            AIItem.created_at.desc(),
+        ).limit(capped_limit)
+    ).all()
+    return [_map_ai_item(item) for item in rows]
+
+
+@router.patch("/assistant/items/{item_id}", response_model=AppAssistantItemResponse)
+def update_assistant_item(
+    item_id: str,
+    payload: AppAssistantItemUpdateRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppAssistantItemResponse:
+    item = db.scalar(select(AIItem).where(AIItem.id == item_id, AIItem.user_id == user.id))
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assistant item not found")
+
+    now = utc_now()
+    if payload.snooze_minutes is not None:
+        item.due_at = now + timedelta(minutes=payload.snooze_minutes)
+        item.timezone = payload.timezone or item.timezone or "UTC"
+        item.status = AIItemStatus.snoozed.value
+        item.completed_at = None
+
+    if payload.due_at is not None:
+        item.due_at = payload.due_at
+    if payload.timezone is not None:
+        item.timezone = payload.timezone.strip() or None
+
+    if payload.status is not None:
+        new_status = payload.status.strip().lower()
+        if new_status not in [s.value for s in AIItemStatus]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid status: {new_status}. Must be one of: {[s.value for s in AIItemStatus]}"
+            )
+        
+        item.status = new_status
+        if item.status == AIItemStatus.done.value:
+            item.completed_at = now
+        else:
+            item.completed_at = None
+
+    db.commit()
+    db.refresh(item)
+    return _map_ai_item(item)
+
+
+@router.post("/captures/{session_id}/ai/reprocess", response_model=AppCaptureAIReprocessResponse)
+def reprocess_capture_ai(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppCaptureAIReprocessResponse:
+    session = db.scalar(
+        select(CaptureSession)
+        .join(
+            DeviceUserBinding,
+            (DeviceUserBinding.device_id == CaptureSession.device_id)
+            & (DeviceUserBinding.user_id == user.id)
+            & (DeviceUserBinding.is_active.is_(True)),
+        )
+        .where(CaptureSession.id == session_id)
+    )
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    try:
+        _, _, extraction = prepare_extraction_record(db, session_id, force_reset=True)
+        db.commit()
+    except AssistantPipelineError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    try:
+        # Commit 'queued' status BEFORE sending to celery to avoid race condition
+        extraction.status = "queued"
+        extraction.error_message = None
+        db.commit()
+        
+        celery_app.send_task("app.workers.tasks.process_session_ai_extraction", args=[session_id], queue="ai")
+        queued = True
+    except Exception as exc:  # noqa: BLE001
+        extraction.status = "failed"
+        extraction.error_message = f"Failed to enqueue AI extraction: {exc}"
+        db.commit()
+        queued = False
+
+    db.refresh(extraction)
+    return AppCaptureAIReprocessResponse(
+        session_id=session_id,
+        extraction_id=extraction.id,
+        status=extraction.status,
+        queued=queued,
+    )
+
+
+# ─────────────────────────────────────────────────────
+# IDEA GRAPH ENDPOINTS
+# ─────────────────────────────────────────────────────
+
+@router.get("/idea-graph", response_model=IdeaGraphResponse)
+def get_idea_graph(
+    entity_type: str | None = None,
+    min_mentions: int = 1,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> IdeaGraphResponse:
+    """Get the user's full Idea Graph with entity nodes and co-occurrence edges."""
+    capped_limit = max(1, min(limit, 500))
+
+    query = select(Entity).where(Entity.user_id == user.id, Entity.mention_count >= min_mentions)
+    if entity_type:
+        normalized = entity_type.strip().lower()
+        allowed = {"person", "project", "topic", "place", "organization"}
+        if normalized in allowed:
+            query = query.where(Entity.entity_type == normalized)
+
+    entities = db.scalars(
+        query.order_by(Entity.mention_count.desc(), Entity.last_seen_at.desc()).limit(capped_limit)
+    ).all()
+
+    nodes = [
+        EntityResponse(
+            entity_id=e.id,
+            entity_type=e.entity_type,
+            name=e.name,
+            mention_count=e.mention_count,
+            first_seen_at=e.first_seen_at,
+            last_seen_at=e.last_seen_at,
+        )
+        for e in entities
+    ]
+
+    # Build edges: two entities share an edge if they co-occur in the same session
+    entity_ids = [e.id for e in entities]
+    edges: list[EntityConnectionResponse] = []
+
+    if len(entity_ids) >= 2:
+        # Get all mentions for these entities
+        mentions = db.execute(
+            select(EntityMention.entity_id, EntityMention.session_id)
+            .where(EntityMention.entity_id.in_(entity_ids))
+        ).all()
+
+        # Build session->entities mapping
+        session_entities: dict[str, set[str]] = {}
+        for entity_id, session_id in mentions:
+            session_entities.setdefault(session_id, set()).add(entity_id)
+
+        # Build entity lookup
+        entity_lookup = {e.id: e for e in entities}
+
+        # Find co-occurrences
+        edge_map: dict[tuple[str, str], set[str]] = {}
+        for session_id, ent_ids in session_entities.items():
+            sorted_ids = sorted(ent_ids)
+            for i in range(len(sorted_ids)):
+                for j in range(i + 1, len(sorted_ids)):
+                    pair = (sorted_ids[i], sorted_ids[j])
+                    edge_map.setdefault(pair, set()).add(session_id)
+
+        for (src_id, tgt_id), shared_sessions in edge_map.items():
+            src = entity_lookup.get(src_id)
+            tgt = entity_lookup.get(tgt_id)
+            if src and tgt:
+                edges.append(
+                    EntityConnectionResponse(
+                        source_entity_id=src.id,
+                        source_name=src.name,
+                        source_type=src.entity_type,
+                        target_entity_id=tgt.id,
+                        target_name=tgt.name,
+                        target_type=tgt.entity_type,
+                        shared_session_count=len(shared_sessions),
+                        shared_session_ids=sorted(shared_sessions),
+                    )
+                )
+
+    edges.sort(key=lambda e: e.shared_session_count, reverse=True)
+
+    return IdeaGraphResponse(
+        nodes=nodes,
+        edges=edges,
+        total_entities=len(nodes),
+        total_connections=len(edges),
+    )
+
+
+@router.get("/idea-graph/entities/{entity_id}", response_model=EntityResponse)
+def get_entity_detail(
+    entity_id: str,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> EntityResponse:
+    """Get details for a specific entity."""
+    entity = db.scalar(
+        select(Entity).where(Entity.id == entity_id, Entity.user_id == user.id)
+    )
+    if not entity:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found")
+
+    return EntityResponse(
+        entity_id=entity.id,
+        entity_type=entity.entity_type,
+        name=entity.name,
+        mention_count=entity.mention_count,
+        first_seen_at=entity.first_seen_at,
+        last_seen_at=entity.last_seen_at,
+    )
+
+
+@router.get("/idea-graph/entities/{entity_id}/mentions", response_model=list[EntityMentionResponse])
+def get_entity_mentions(
+    entity_id: str,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> list[EntityMentionResponse]:
+    """Get all session mentions for a specific entity (the 'connections' in the graph)."""
+    entity = db.scalar(
+        select(Entity).where(Entity.id == entity_id, Entity.user_id == user.id)
+    )
+    if not entity:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found")
+
+    capped = max(1, min(limit, 200))
+    mentions = db.scalars(
+        select(EntityMention)
+        .where(EntityMention.entity_id == entity.id)
+        .order_by(EntityMention.created_at.desc())
+        .limit(capped)
+    ).all()
+
+    return [
+        EntityMentionResponse(
+            mention_id=m.id,
+            entity_id=entity.id,
+            entity_name=entity.name,
+            entity_type=entity.entity_type,
+            session_id=m.session_id,
+            context_snippet=m.context_snippet,
+            confidence=m.confidence,
+            created_at=m.created_at,
+        )
+        for m in mentions
+    ]

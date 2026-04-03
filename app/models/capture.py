@@ -37,6 +37,7 @@ class CaptureSession(Base):
     device = relationship("Device", back_populates="sessions")
     chunks = relationship("AudioChunk", back_populates="session", cascade="all, delete-orphan")
     transcript = relationship("Transcript", back_populates="session", uselist=False, cascade="all, delete-orphan")
+    ai_extraction = relationship("AIExtraction", back_populates="session", uselist=False, cascade="all, delete-orphan")
 
 
 class AudioChunk(Base):

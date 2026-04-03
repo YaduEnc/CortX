@@ -24,7 +24,7 @@ services:
     container_name: secondmind-worker
     env_file:
       - .env
-    command: celery -A app.workers.celery_app.celery_app worker --loglevel=INFO --concurrency=1 -Q transcription
+    command: celery -A app.workers.celery_app.celery_app worker --loglevel=INFO --concurrency=1 -Q transcription,ai
     depends_on:
       postgres:
         condition: service_healthy

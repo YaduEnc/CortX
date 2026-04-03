@@ -9,12 +9,15 @@ final class AppSessionViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var pairedDevices: [PairedDevice] = []
     @Published var captures: [AppCaptureSession] = []
+    @Published var assistantItems: [AppAssistantItem] = []
+    @Published var userPreferences: AppUserPreferences?
+    @Published var dailySummary: DashboardDailySummary?
     @Published var userEmail: String = ""
     @Published var userFullName: String?
 
     private let apiClient: APIClient
     private let tokenStore: KeychainTokenStore
-    private var accessToken: String?
+    private(set) var accessToken: String?
     private var didBootstrap = false
     private let lastUserEmailKey = "last_user_email"
     private let lastUserFullNameKey = "last_user_full_name"
@@ -40,8 +43,11 @@ final class AppSessionViewModel: ObservableObject {
 
         Task {
             await refreshCurrentUser(showLoader: false)
+            await refreshUserPreferences(showLoader: false)
             await refreshPairedDevices(showLoader: false)
             await refreshCaptures(showLoader: false)
+            await refreshAssistantItems(showLoader: false)
+            await refreshDailySummary(showLoader: false)
             isBootstrapping = false
         }
     }
@@ -56,8 +62,11 @@ final class AppSessionViewModel: ObservableObject {
             let tokenResponse = try await apiClient.register(email: email, password: password, fullName: fullName)
             completeLogin(token: tokenResponse.access_token, email: email)
             await refreshCurrentUser(showLoader: false)
+            await refreshUserPreferences(showLoader: false)
             await refreshPairedDevices(showLoader: false)
             await refreshCaptures(showLoader: false)
+            await refreshAssistantItems(showLoader: false)
+            await refreshDailySummary(showLoader: false)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -73,8 +82,11 @@ final class AppSessionViewModel: ObservableObject {
             let tokenResponse = try await apiClient.login(email: email, password: password)
             completeLogin(token: tokenResponse.access_token, email: email)
             await refreshCurrentUser(showLoader: false)
+            await refreshUserPreferences(showLoader: false)
             await refreshPairedDevices(showLoader: false)
             await refreshCaptures(showLoader: false)
+            await refreshAssistantItems(showLoader: false)
+            await refreshDailySummary(showLoader: false)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -198,6 +210,91 @@ final class AppSessionViewModel: ObservableObject {
         }
     }
 
+    func updateCurrentUser(fullName: String?) async -> Bool {
+        guard let token = accessToken else {
+            errorMessage = "Session expired. Please log in again."
+            return false
+        }
+        isWorking = true
+        errorMessage = nil
+        defer { isWorking = false }
+
+        do {
+            let me = try await apiClient.updateCurrentUser(fullName: fullName, accessToken: token)
+            userEmail = me.email
+            userFullName = me.full_name?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            if let userFullName {
+                UserDefaults.standard.set(userFullName, forKey: lastUserFullNameKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: lastUserFullNameKey)
+            }
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func refreshUserPreferences(showLoader: Bool = true) async {
+        guard let token = accessToken else {
+            userPreferences = nil
+            return
+        }
+
+        if showLoader {
+            isWorking = true
+        }
+        defer {
+            if showLoader {
+                isWorking = false
+            }
+        }
+
+        do {
+            userPreferences = try await apiClient.getUserPreferences(accessToken: token)
+            errorMessage = nil
+        } catch let error as APIClientError {
+            if case .unauthorized = error {
+                logout()
+                errorMessage = "Session expired. Please log in again."
+            } else {
+                errorMessage = error.localizedDescription
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func updateUserPreferences(
+        timezone: String? = nil,
+        dailySummaryEnabled: Bool? = nil,
+        reminderNotificationsEnabled: Bool? = nil,
+        calendarExportDefaultEnabled: Bool? = nil
+    ) async -> Bool {
+        guard let token = accessToken else {
+            errorMessage = "Session expired. Please log in again."
+            return false
+        }
+
+        isWorking = true
+        errorMessage = nil
+        defer { isWorking = false }
+
+        do {
+            let payload = AppUserPreferencesUpdateRequest(
+                timezone: timezone,
+                daily_summary_enabled: dailySummaryEnabled,
+                reminder_notifications_enabled: reminderNotificationsEnabled,
+                calendar_export_default_enabled: calendarExportDefaultEnabled
+            )
+            userPreferences = try await apiClient.updateUserPreferences(payload: payload, accessToken: token)
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
     func refreshPairedDevices(showLoader: Bool = true) async {
         guard let token = accessToken else {
             pairedDevices = []
@@ -236,6 +333,9 @@ final class AppSessionViewModel: ObservableObject {
         isAuthenticated = false
         pairedDevices = []
         captures = []
+        assistantItems = []
+        dailySummary = nil
+        userPreferences = nil
         userFullName = nil
         UserDefaults.standard.removeObject(forKey: lastUserFullNameKey)
     }
@@ -277,11 +377,214 @@ final class AppSessionViewModel: ObservableObject {
         return try await apiClient.downloadCaptureAudio(sessionID: sessionID, accessToken: token)
     }
 
+    func uploadAppCaptureWAV(
+        wavData: Data,
+        sampleRate: Int = 16_000,
+        channels: Int = 1,
+        codec: String = "pcm16le"
+    ) async -> AppCaptureUploadResponse? {
+        guard let token = accessToken else {
+            errorMessage = "Session expired. Please log in again."
+            return nil
+        }
+        isWorking = true
+        errorMessage = nil
+        defer { isWorking = false }
+
+        do {
+            let response = try await apiClient.uploadAppCaptureWAV(
+                wavData: wavData,
+                sampleRate: sampleRate,
+                channels: channels,
+                codec: codec,
+                accessToken: token
+            )
+            return response
+        } catch let error as APIClientError {
+            if case .unauthorized = error {
+                logout()
+                errorMessage = "Session expired. Please log in again."
+            } else {
+                errorMessage = error.localizedDescription
+            }
+            return nil
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
     func fetchTranscript(sessionID: String) async throws -> AppCaptureTranscript {
         guard let token = accessToken else {
             throw APIClientError.unauthorized
         }
         return try await apiClient.getCaptureTranscript(sessionID: sessionID, accessToken: token)
+    }
+
+    func fetchCaptureAI(sessionID: String) async throws -> AppCaptureAIResponse {
+        guard let token = accessToken else {
+            throw APIClientError.unauthorized
+        }
+        return try await apiClient.getCaptureAI(sessionID: sessionID, accessToken: token)
+    }
+
+    func refreshAssistantItems(
+        showLoader: Bool = true,
+        itemType: String? = nil,
+        itemStatus: String? = nil
+    ) async {
+        guard let token = accessToken else {
+            assistantItems = []
+            return
+        }
+
+        if showLoader {
+            isWorking = true
+        }
+        defer {
+            if showLoader {
+                isWorking = false
+            }
+        }
+
+        do {
+            assistantItems = try await apiClient.listAssistantItems(
+                accessToken: token,
+                itemType: itemType,
+                itemStatus: itemStatus
+            )
+            errorMessage = nil
+        } catch let error as APIClientError {
+            if case .unauthorized = error {
+                logout()
+                errorMessage = "Session expired. Please log in again."
+            } else {
+                errorMessage = error.localizedDescription
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func updateAssistantItem(
+        itemID: String,
+        status: String? = nil,
+        dueAt: Date? = nil,
+        timezone: String? = nil,
+        snoozeMinutes: Int? = nil
+    ) async throws -> AppAssistantItem {
+        guard let token = accessToken else {
+            throw APIClientError.unauthorized
+        }
+        let payload = AppAssistantItemUpdateRequest(
+            status: status,
+            due_at: dueAt,
+            timezone: timezone,
+            snooze_minutes: snoozeMinutes
+        )
+        return try await apiClient.updateAssistantItem(itemID: itemID, payload: payload, accessToken: token)
+    }
+
+    func reprocessCaptureAI(sessionID: String) async throws -> AppCaptureAIReprocessResponse {
+        guard let token = accessToken else {
+            throw APIClientError.unauthorized
+        }
+        return try await apiClient.reprocessCaptureAI(sessionID: sessionID, accessToken: token)
+    }
+
+    func refreshDailySummary(
+        showLoader: Bool = true,
+        date: String? = nil,
+        deviceID: String? = nil
+    ) async {
+        guard let token = accessToken else {
+            dailySummary = nil
+            return
+        }
+        if showLoader {
+            isWorking = true
+        }
+        defer {
+            if showLoader {
+                isWorking = false
+            }
+        }
+
+        let timezone = userPreferences?.timezone ?? TimeZone.current.identifier
+        do {
+            dailySummary = try await apiClient.getDashboardDailySummary(
+                accessToken: token,
+                date: date,
+                timezone: timezone,
+                deviceID: deviceID
+            )
+            errorMessage = nil
+        } catch let error as APIClientError {
+            if case .unauthorized = error {
+                logout()
+                errorMessage = "Session expired. Please log in again."
+            } else {
+                errorMessage = error.localizedDescription
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func updateDeviceAlias(deviceID: String, alias: String?) async -> Bool {
+        guard let token = accessToken else {
+            errorMessage = "Session expired. Please log in again."
+            return false
+        }
+        do {
+            _ = try await apiClient.updatePairedDevice(deviceID: deviceID, alias: alias, accessToken: token)
+            await refreshPairedDevices(showLoader: false)
+            await refreshDailySummary(showLoader: false)
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func unpairDevice(deviceID: String) async -> Bool {
+        guard let token = accessToken else {
+            errorMessage = "Session expired. Please log in again."
+            return false
+        }
+        do {
+            _ = try await apiClient.unpairDevice(deviceID: deviceID, accessToken: token)
+            await refreshPairedDevices(showLoader: false)
+            await refreshCaptures(showLoader: false)
+            await refreshDailySummary(showLoader: false)
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func queueDeviceNetworkProfile(deviceID: String, ssid: String, password: String) async -> Bool {
+        guard let token = accessToken else {
+            errorMessage = "Session expired. Please log in again."
+            return false
+        }
+        if ssid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            errorMessage = "SSID cannot be empty."
+            return false
+        }
+        do {
+            _ = try await apiClient.queueDeviceNetworkProfile(
+                deviceID: deviceID,
+                ssid: ssid,
+                password: password,
+                accessToken: token
+            )
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
     }
 
     func pairingAccessToken() -> String? {
