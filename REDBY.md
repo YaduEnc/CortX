@@ -39,6 +39,7 @@ flowchart LR
 | Infra | Persistent model/cache volumes | Done | Docker volumes for HuggingFace cache and local whisper model files. |
 | iOS App | Device pairing UI | Done | Pair sheet scans, reads nonce, requests pair token, writes token to ESP32. |
 | iOS App | Saved audio list + playback | Done | Lists capture sessions and plays WAV from backend API. |
+| iOS App | Transcript UI integration | Done | Dashboard can load transcript per capture and show inline transcript text + metadata. |
 | iOS App | Auto refresh captures | Done | Dashboard polls captures periodically for near-live updates. |
 
 ## Data Model (Current)
@@ -68,6 +69,15 @@ Compatibility route still present:
 2. Let firmware stream chunks.
 3. Firmware auto-finalizes each rolling session.
 4. App sees capture entries, plays audio, and transcript appears after worker completes.
+5. In app, tap `Load Text` on a capture to fetch transcript on demand (or wait for auto refresh/prefetch on done sessions).
+
+## Latest Milestones (2026-04-03)
+- Local self-hosted Whisper model enabled and verified from path: `/models/faster-whisper-small`.
+- Worker prewarm, retry/backoff, and stale transcribing recovery implemented.
+- Dashboard transcript flow implemented and compiled successfully:
+  - load transcript button
+  - inline text rendering
+  - not-ready handling for in-progress transcription.
 
 ## What Is Next
 - Add explicit health/metrics endpoint for transcription queue depth + worker latency.

@@ -6,6 +6,9 @@ struct DashboardView: View {
     @StateObject private var bleGateway = BLEPairingViewModel()
     @StateObject private var playback = AudioPlaybackManager()
     @State private var loadingAudioSessionID: String?
+    @State private var loadingTranscriptSessionIDs: Set<String> = []
+    @State private var transcriptsBySessionID: [String: AppCaptureTranscript] = [:]
+    @State private var transcriptErrorsBySessionID: [String: String] = [:]
     @State private var reveal = false
     @State private var showDeleteAccountSheet = false
 
@@ -237,6 +240,48 @@ struct DashboardView: View {
                             }
                             .buttonStyle(LiquidPrimaryButtonStyle())
                             .disabled(!capture.isPlayable || loadingAudioSessionID != nil)
+
+                            Button {
+                                Task {
+                                    await loadTranscript(capture, silentNotReady: false)
+                                }
+                            } label: {
+                                if loadingTranscriptSessionIDs.contains(capture.id) {
+                                    ProgressView()
+                                } else if transcriptsBySessionID[capture.id] != nil {
+                                    Label("Transcript", systemImage: "text.bubble")
+                                } else {
+                                    Label("Load Text", systemImage: "text.quote")
+                                }
+                            }
+                            .buttonStyle(LiquidSecondaryButtonStyle())
+                            .disabled(loadingTranscriptSessionIDs.contains(capture.id))
+                        }
+
+                        if let transcript = transcriptsBySessionID[capture.id] {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(transcript.full_text.isEmpty ? "No speech detected in this capture." : transcript.full_text)
+                                    .font(.footnote)
+                                    .foregroundStyle(.primary)
+                                    .textSelection(.enabled)
+                                HStack(spacing: 8) {
+                                    if let language = transcript.language, !language.isEmpty {
+                                        Text("Lang: \(language)")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Text("Model: \(transcript.model_name)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(10)
+                            .background(Color.black.opacity(0.04))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        } else if let transcriptError = transcriptErrorsBySessionID[capture.id] {
+                            Text(transcriptError)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                     .padding(.vertical, 5)
@@ -269,6 +314,50 @@ struct DashboardView: View {
             guard session.isAuthenticated else { continue }
             await session.refreshCaptures(showLoader: false)
             await session.refreshPairedDevices(showLoader: false)
+            await prefetchReadyTranscripts()
+        }
+    }
+
+    private func prefetchReadyTranscripts() async {
+        let ready = session.captures.filter {
+            $0.status.lowercased() == "done" &&
+            transcriptsBySessionID[$0.id] == nil &&
+            !loadingTranscriptSessionIDs.contains($0.id)
+        }
+
+        for capture in ready.prefix(8) {
+            await loadTranscript(capture, silentNotReady: true)
+        }
+    }
+
+    private func loadTranscript(_ capture: AppCaptureSession, silentNotReady: Bool) async {
+        if loadingTranscriptSessionIDs.contains(capture.id) {
+            return
+        }
+
+        loadingTranscriptSessionIDs.insert(capture.id)
+        defer { loadingTranscriptSessionIDs.remove(capture.id) }
+
+        do {
+            let transcript = try await session.fetchTranscript(sessionID: capture.id)
+            transcriptsBySessionID[capture.id] = transcript
+            transcriptErrorsBySessionID.removeValue(forKey: capture.id)
+        } catch let apiError as APIClientError {
+            switch apiError {
+            case .server(let message):
+                let lower = message.lowercased()
+                if lower.contains("not ready") || lower.contains("transcribing") {
+                    if !silentNotReady {
+                        transcriptErrorsBySessionID[capture.id] = "Transcript is not ready yet. Try again in a few seconds."
+                    }
+                } else {
+                    transcriptErrorsBySessionID[capture.id] = message
+                }
+            default:
+                transcriptErrorsBySessionID[capture.id] = apiError.localizedDescription
+            }
+        } catch {
+            transcriptErrorsBySessionID[capture.id] = error.localizedDescription
         }
     }
 }

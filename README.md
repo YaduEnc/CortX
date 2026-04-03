@@ -31,9 +31,34 @@ flowchart LR
 | Continuous chunk upload (ping-pong buffers) | Done |
 | Rolling auto-finalize session upload | Done |
 | DB-stored WAV playback via API | Done |
+| In-app transcript fetch + display | Done |
 | Local faster-whisper transcription worker | Done |
 | Retry + stale-session recovery for transcription | Done |
 | Self-hosted Whisper model path support | Done |
+
+## Progress Snapshot (2026-04-03)
+- Firmware now performs continuous chunk capture with rolling auto-finalize, so finalized sessions are produced automatically without manual stop.
+- Backend assembles chunk sessions into WAV, stores audio in PostgreSQL, then queues transcription via Celery.
+- Worker now includes retry/backoff and stale-session recovery to reduce stuck transcription states.
+- Whisper can run from local self-hosted model path (`WHISPER_MODEL_PATH`) so transcription is fully local to your stack.
+- iOS dashboard now supports transcript loading and inline transcript display per capture.
+
+## API Logic (Capture + Transcription)
+1. Device auth:
+`POST /v1/device/auth`
+2. Start capture session:
+`POST /v1/device/capture/sessions`
+3. Upload ordered chunks:
+`POST /v1/device/capture/chunks`
+4. Finalize session:
+`POST /v1/device/capture/sessions/{session_id}/finalize`
+5. Backend queues transcription job for session id.
+6. App fetches capture list:
+`GET /v1/app/captures`
+7. App fetches audio:
+`GET /v1/app/captures/{session_id}/audio`
+8. App fetches transcript:
+`GET /v1/app/captures/{session_id}/transcript`
 
 ## Quick Start
 1. Create env file:
