@@ -20,9 +20,9 @@
 #define WIFI_PASSWORD "0000110000"
 #define API_BASE_URL "https://hamza.yaduraj.me/v1"
 
-#define DEVICE_CODE "manu"
+#define DEVICE_CODE "lodu"
 #define DEVICE_SECRET "1234567890"
-#define DEVICE_BLE_NAME "SecondMind"
+#define DEVICE_BLE_NAME "GanduDevice"
 
 #define PAIR_BUTTON_PIN -1
 
@@ -101,12 +101,15 @@ static float g_dcPrevY = 0.0f;
 
 static I2SClass g_i2s;
 static TaskHandle_t g_recTaskHandle = nullptr;
+static bool g_advConfigured = false;
 
 // ============================================================================
 // FORWARD DECLARATIONS
 // ============================================================================
 bool startLiveRecording();
 void stopLiveRecording(bool dueToError);
+void startBleAdvertising();
+void stopBleAdvertising();
 
 // ============================================================================
 // HELPERS
@@ -345,6 +348,22 @@ void setupBle() {
   g_pairService->start();
 }
 
+void startBleAdvertising() {
+  BLEAdvertising *adv = BLEDevice::getAdvertising();
+  if (!g_advConfigured) {
+    adv->addServiceUUID(PAIR_SERVICE_UUID);
+    adv->setScanResponse(true);
+    g_advConfigured = true;
+  }
+  BLEDevice::startAdvertising();
+  Serial.println("[BLE] advertising ON");
+}
+
+void stopBleAdvertising() {
+  BLEDevice::stopAdvertising();
+  Serial.println("[BLE] advertising OFF");
+}
+
 void enterPairingMode() {
   g_pairNonce = generateNonceHex(16);
   g_pairTokenFromApp = "";
@@ -355,17 +374,18 @@ void enterPairingMode() {
   g_pairNonceChar->setValue(g_pairNonce.c_str());
   setPairStatus("pairing_mode");
 
-  BLEAdvertising *adv = BLEDevice::getAdvertising();
-  adv->addServiceUUID(PAIR_SERVICE_UUID);
-  adv->setScanResponse(true);
-  BLEDevice::startAdvertising();
+  startBleAdvertising();
 
   Serial.printf("[PAIR] mode ON nonce=%s\n", g_pairNonce.c_str());
 }
 
 void exitPairingMode(const String &finalStatus) {
   g_isPairingMode = false;
-  BLEDevice::stopAdvertising();
+  if (g_isPaired) {
+    startBleAdvertising();
+  } else {
+    stopBleAdvertising();
+  }
   setPairStatus(finalStatus);
   Serial.printf("[PAIR] mode OFF status=%s\n", finalStatus.c_str());
 }
@@ -636,6 +656,7 @@ void setup() {
   if (g_isPaired) {
     Serial.println("[BOOT] Device already paired.");
     setPairStatus("idle");
+    startBleAdvertising();
   } else {
     Serial.println("[BOOT] Device not paired.");
 #if TEST_MODE_AUTO_PAIR_ON_BOOT
@@ -661,4 +682,3 @@ void loop() {
   handlePairingState();
   delay(10);
 }
-

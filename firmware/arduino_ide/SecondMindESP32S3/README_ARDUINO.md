@@ -33,3 +33,6 @@ Notes:
 - Register device once with backend before flashing.
 - Audio uplink path is now:
   - `ESP32 -> BLE notifications -> iOS app -> backend websocket`
+
+Alternative direct-uplink sketch (stores WAV in backend PostgreSQL):
+- `firmware/arduino_ide/SecondMindESP32S3BackendDB/SecondMindESP32S3BackendDB.ino`

@@ -31,15 +31,14 @@ struct DashboardView: View {
                             .padding(.horizontal, 16)
                     }
 
-                    if let liveError = bleGateway.liveErrorMessage {
-                        Text(liveError)
+                    if let bleError = bleGateway.errorMessage {
+                        Text(bleError)
                             .font(.footnote)
                             .foregroundStyle(.red)
                             .padding(.horizontal, 16)
                     }
 
                     devicesCard
-                    liveGatewayCard
                     recordingsCard
                 }
                 .opacity(reveal ? 1 : 0)
@@ -65,8 +64,12 @@ struct DashboardView: View {
             DeleteAccountSheet(session: session)
         }
         .task {
-            await session.refreshPairedDevices()
-            await session.refreshCaptures()
+            await session.refreshCurrentUser(showLoader: false)
+            await session.refreshPairedDevices(showLoader: false)
+            await session.refreshCaptures(showLoader: false)
+        }
+        .task {
+            await pollDashboardData()
         }
         .onAppear {
             reveal = true
@@ -113,6 +116,7 @@ struct DashboardView: View {
 
                 Button {
                     Task {
+                        await session.refreshCurrentUser()
                         await session.refreshPairedDevices()
                         await session.refreshCaptures()
                     }
@@ -209,11 +213,11 @@ struct DashboardView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Text(capture.status.capitalized)
+                            Text(capture.playbackAvailabilityLabel)
                                 .font(.caption2.weight(.semibold))
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
-                                .background(capture.isPlayable ? Color.green.opacity(0.15) : Color.orange.opacity(0.18))
+                                .background(capture.has_audio ? Color.green.opacity(0.15) : Color.orange.opacity(0.18))
                                 .clipShape(Capsule())
                         }
 
@@ -247,112 +251,6 @@ struct DashboardView: View {
         .liquidCard()
     }
 
-    private var liveGatewayCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Live Gateway")
-                .font(.headline)
-
-            Text(bleGateway.liveStatusMessage)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(livePhaseColor)
-                    .frame(width: 8, height: 8)
-                Text(livePhaseText)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-
-            if bleGateway.isLiveStreaming {
-                HStack(spacing: 12) {
-                    Text("Frames: \(bleGateway.liveFramesSent)")
-                        .font(.caption2)
-                    Text("Packets: \(bleGateway.livePacketsReceived)")
-                        .font(.caption2)
-                    Text("Drops: \(bleGateway.livePacketDrops)")
-                        .font(.caption2)
-                }
-                .foregroundStyle(.secondary)
-            }
-
-            if !bleGateway.liveTransportLogs.isEmpty {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(bleGateway.liveTransportLogs.suffix(40).enumerated()), id: \.offset) { _, line in
-                            Text(line)
-                                .font(.system(size: 11, weight: .regular, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                }
-                .frame(minHeight: 120, maxHeight: 180)
-                .padding(10)
-                .background(Color.black.opacity(0.04))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-            }
-
-            HStack(spacing: 10) {
-                Button {
-                    startLiveGateway()
-                } label: {
-                    if bleGateway.livePhase.isBusy && bleGateway.livePhase != .stopping {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(.white)
-                            Text(liveStartButtonTitle)
-                        }
-                    } else {
-                        Label(liveStartButtonTitle, systemImage: liveStartButtonSymbol)
-                    }
-                }
-                .buttonStyle(LiquidPrimaryButtonStyle())
-                .disabled(bleGateway.isLiveStreaming || session.pairedDevices.isEmpty)
-
-                Button {
-                    bleGateway.stopLiveStreaming()
-                    Task {
-                        try? await Task.sleep(nanoseconds: 1_000_000_000)
-                        await session.refreshCaptures()
-                    }
-                } label: {
-                    if bleGateway.livePhase == .stopping {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Stopping...")
-                        }
-                    } else {
-                        Label("Stop Live", systemImage: "stop.fill")
-                    }
-                }
-                .buttonStyle(LiquidSecondaryButtonStyle())
-                .disabled(!bleGateway.isLiveStreaming)
-            }
-        }
-        .padding(14)
-        .liquidCard()
-    }
-
-    private func startLiveGateway() {
-        guard let token = session.pairingAccessToken() else {
-            session.errorMessage = "Login expired. Please log in again."
-            return
-        }
-        guard let deviceCode = session.pairedDevices.first?.device_code else {
-            session.errorMessage = "No paired device available."
-            return
-        }
-        bleGateway.startLiveStreaming(
-            deviceCode: deviceCode,
-            appToken: token,
-            apiClient: session.api()
-        )
-    }
-
     private func playCapture(_ capture: AppCaptureSession) async {
         loadingAudioSessionID = capture.id
         defer { loadingAudioSessionID = nil }
@@ -365,63 +263,12 @@ struct DashboardView: View {
         }
     }
 
-    private var liveStartButtonTitle: String {
-        switch bleGateway.livePhase {
-        case .idle, .failed:
-            return "Start Live"
-        case .starting:
-            return "Starting..."
-        case .connectingBLE:
-            return "Connecting BLE..."
-        case .waitingAudio:
-            return "Waiting Audio..."
-        case .streaming:
-            return "Live Running"
-        case .stopping:
-            return "Stopping..."
-        }
-    }
-
-    private var liveStartButtonSymbol: String {
-        switch bleGateway.livePhase {
-        case .streaming:
-            return "waveform.badge.mic"
-        case .failed:
-            return "exclamationmark.triangle.fill"
-        default:
-            return "dot.radiowaves.left.and.right"
-        }
-    }
-
-    private var livePhaseText: String {
-        switch bleGateway.livePhase {
-        case .idle:
-            return "Idle"
-        case .starting:
-            return "Starting"
-        case .connectingBLE:
-            return "Connecting BLE"
-        case .waitingAudio:
-            return "Waiting for device audio"
-        case .streaming:
-            return "Streaming"
-        case .stopping:
-            return "Stopping"
-        case .failed:
-            return "Failed"
-        }
-    }
-
-    private var livePhaseColor: Color {
-        switch bleGateway.livePhase {
-        case .idle:
-            return .gray
-        case .starting, .connectingBLE, .waitingAudio, .stopping:
-            return .orange
-        case .streaming:
-            return .green
-        case .failed:
-            return .red
+    private func pollDashboardData() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard session.isAuthenticated else { continue }
+            await session.refreshCaptures(showLoader: false)
+            await session.refreshPairedDevices(showLoader: false)
         }
     }
 }
@@ -517,23 +364,15 @@ struct PairDeviceSheet: View {
 
     @ObservedObject var session: AppSessionViewModel
     @ObservedObject var ble: BLEPairingViewModel
-    @State private var wifiSSID = ""
-    @State private var wifiPassword = ""
-    @State private var queueingWifi = false
     let onPaired: () -> Void
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 12) {
                 header
-
                 statusCard
-
                 controlsRow
-                wifiCard
-
                 listContent
-
                 Spacer(minLength: 0)
             }
             .padding(14)
@@ -552,9 +391,6 @@ struct PairDeviceSheet: View {
                     onPaired()
                 }
             }
-            .task {
-                // User taps Scan after Bluetooth state settles.
-            }
             .onDisappear {
                 ble.stopScanning()
                 ble.disconnect()
@@ -564,7 +400,7 @@ struct PairDeviceSheet: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Find your ESP32 device over Bluetooth, then pair with your account.")
+            Text("Find your ESP32 device over Bluetooth, then pair it with your account.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             if let code = ble.discoveredDeviceCode, !code.isEmpty {
@@ -598,12 +434,12 @@ struct PairDeviceSheet: View {
     }
 
     private var controlsRow: some View {
-            HStack(spacing: 10) {
-                Button {
-                    ble.startScanning()
-                } label: {
-                    Label("Scan", systemImage: "magnifyingglass")
-                }
+        HStack(spacing: 10) {
+            Button {
+                ble.startScanning()
+            } label: {
+                Label("Scan", systemImage: "magnifyingglass")
+            }
             .buttonStyle(LiquidPrimaryButtonStyle())
             .disabled(!ble.bluetoothReady)
 
@@ -672,95 +508,5 @@ struct PairDeviceSheet: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var wifiCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Device Wi-Fi Setup")
-                .font(.subheadline.weight(.semibold))
-            Text("Use your home Wi-Fi or phone hotspot SSID/password. Send over BLE for immediate setup, or queue in backend for next online pull.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            TextField("Wi-Fi SSID", text: $wifiSSID)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder)
-            SecureField("Wi-Fi password", text: $wifiPassword)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder)
-
-            HStack(spacing: 10) {
-                Button {
-                    ble.sendWifiConfig(ssid: wifiSSID, password: wifiPassword)
-                } label: {
-                    if ble.isSendingWifiConfig {
-                        ProgressView()
-                    } else {
-                        Label("Send over BLE", systemImage: "antenna.radiowaves.left.and.right")
-                    }
-                }
-                .buttonStyle(LiquidPrimaryButtonStyle())
-                .disabled(!ble.canConfigureWifi || ble.isSendingWifiConfig || wifiSSID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                Button {
-                    Task {
-                        await queueWifiInBackend()
-                    }
-                } label: {
-                    if queueingWifi {
-                        ProgressView()
-                    } else {
-                        Label("Queue in backend", systemImage: "tray.and.arrow.down")
-                    }
-                }
-                .buttonStyle(LiquidSecondaryButtonStyle())
-                .disabled(queueingWifi || wifiSSID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-
-            Text("Device Wi-Fi status: \(ble.wifiStatusMessage)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .liquidCard()
-    }
-
-    private func queueWifiInBackend() async {
-        let normalizedSSID = wifiSSID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedSSID.isEmpty else {
-            session.errorMessage = "SSID is required."
-            return
-        }
-        guard let appToken = session.pairingAccessToken() else {
-            session.errorMessage = "You must be logged in."
-            return
-        }
-        guard
-            let deviceCode = ble.discoveredDeviceCode?.trimmingCharacters(in: .whitespacesAndNewlines),
-            !deviceCode.isEmpty,
-            let paired = session.pairedDevices.first(where: { $0.device_code.caseInsensitiveCompare(deviceCode) == .orderedSame })
-        else {
-            session.errorMessage = "Pair the device first so backend can map network profile to it."
-            return
-        }
-
-        queueingWifi = true
-        defer { queueingWifi = false }
-
-        do {
-            let response = try await session.api().queueDeviceNetworkProfile(
-                deviceID: paired.device_id,
-                ssid: normalizedSSID,
-                password: wifiPassword,
-                source: "app_manual",
-                accessToken: appToken
-            )
-            ble.wifiStatusMessage = "Queued in backend (\(response.expires_in_seconds / 60) min TTL)."
-        } catch {
-            session.errorMessage = error.localizedDescription
-        }
     }
 }

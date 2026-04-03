@@ -1,6 +1,6 @@
-# SecondMind Backend (BLE Phone Gateway)
+# SecondMind Backend (Device Direct DB Upload)
 
-Production-oriented backend + app gateway foundation for BLE audio capture from ESP32 devices and cloud storage via iOS uplink.
+Production-oriented backend + app pairing foundation for ESP32 device direct WAV upload into PostgreSQL and app playback.
 
 ## Tech Stack
 - FastAPI (API)
@@ -12,11 +12,10 @@ Production-oriented backend + app gateway foundation for BLE audio capture from 
 
 ## Architecture
 1. ESP32 pairs with user (BLE + backend claim flow).
-2. ESP32 streams audio packets to iOS over BLE.
-3. iOS app starts cloud live stream (`/v1/app/live/start`).
-4. iOS app forwards framed PCM over `/v1/stream/ws`.
-5. Backend assembles audio and stores final WAV.
-6. App fetches captures and plays audio.
+2. ESP32 records one WAV session on wake/stop trigger.
+3. ESP32 uploads WAV directly to backend (`/v1/device/captures/upload-wav`).
+4. Backend stores WAV in PostgreSQL (`bytea`) and queues transcription.
+5. App fetches captures and plays audio from API (`/v1/app/captures/{id}/audio`).
 
 ## Quick Start
 1. Create env file:
@@ -37,15 +36,15 @@ http://localhost:8000/v1
 - `POST /v1/app/register`
 - `POST /v1/app/auth`
 - `GET /v1/app/devices`
-- `POST /v1/app/live/start`
 - `GET /v1/app/captures`
 - `GET /v1/app/captures/{session_id}/audio`
 - `GET /v1/app/captures/{session_id}/transcript`
 - `POST /v1/device/register` (requires `X-Admin-Key`)
 - `POST /v1/device/auth`
+- `POST /v1/device/captures/upload-wav` (device bearer token; stores WAV in PostgreSQL)
 - `POST /v1/pairing/start`
 - `POST /v1/device/pairing/complete`
-- `GET /v1/stream/ws?stream_token=...` (websocket)
+- `POST /v1/app/live/start` (deprecated, returns 410)
 
 ## IoT Team Guide
 Detailed integration contract is documented at:
@@ -62,6 +61,6 @@ Detailed integration contract is documented at:
 - `firmware/arduino_ide/SecondMindESP32S3/README_ARDUINO.md`
 
 ## Notes
-- Raw audio is stored in object storage, not PostgreSQL.
+- Raw/assembled audio is now persisted in PostgreSQL (`bytea`) for DB-first capture flows.
 - Database schema currently auto-creates on startup via SQLAlchemy metadata.
 - For long-term production, add Alembic migration workflow.

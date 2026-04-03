@@ -1,17 +1,47 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, status
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_device
 from app.core.config import get_settings
 from app.core.security import create_device_access_token, hash_secret, verify_secret
 from app.db.session import get_db
+from app.models.capture import AudioChunk, CaptureSession, SessionStatus
 from app.models.device import Device
-from app.schemas.device import DeviceAuthRequest, DeviceRegisterRequest, DeviceResponse, TokenResponse
+from app.schemas.device import (
+    DeviceAuthRequest,
+    DeviceCaptureChunkUploadResponse,
+    DeviceCaptureFinalizeRequest,
+    DeviceCaptureFinalizeResponse,
+    DeviceCaptureSessionStartRequest,
+    DeviceCaptureSessionStartResponse,
+    DeviceCaptureUploadResponse,
+    DeviceRegisterRequest,
+    DeviceResponse,
+    TokenResponse,
+)
 from app.schemas.network import DeviceNetworkProfilePullResponse
+from app.services.capture_finalize import assemble_capture_session
 from app.services.network_profiles import consume_network_profile
+from app.utils.crc import crc32_hex
+from app.utils.time import utc_now
+from app.workers.celery_app import celery_app
 
 router = APIRouter(prefix="/device", tags=["device"])
+
+
+def _enqueue_transcription(session: CaptureSession, db: Session) -> None:
+    try:
+        celery_app.send_task("app.workers.tasks.process_session_transcription", args=[session.id], queue="transcription")
+    except Exception as exc:  # noqa: BLE001
+        session.status = SessionStatus.failed.value
+        session.error_message = f"Failed to enqueue transcription: {exc}"
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Capture stored, but transcription queue is unavailable",
+        ) from exc
 
 
 @router.post("/register", response_model=DeviceResponse, status_code=status.HTTP_201_CREATED)
@@ -62,4 +92,229 @@ def pull_network_profile(device: Device = Depends(get_current_device)) -> Device
         ssid=ssid,
         password=str(profile.get("password") or ""),
         source=str(profile.get("source") or "app_manual"),
+    )
+
+
+@router.post("/capture/sessions", response_model=DeviceCaptureSessionStartResponse, status_code=status.HTTP_201_CREATED)
+def start_capture_session(
+    payload: DeviceCaptureSessionStartRequest,
+    db: Session = Depends(get_db),
+    device: Device = Depends(get_current_device),
+) -> DeviceCaptureSessionStartResponse:
+    codec = payload.codec.strip().lower()
+    if not codec:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="codec is required")
+
+    session = CaptureSession(
+        device_id=device.id,
+        status=SessionStatus.receiving.value,
+        sample_rate=payload.sample_rate,
+        channels=payload.channels,
+        codec=codec,
+        total_chunks=0,
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+
+    return DeviceCaptureSessionStartResponse(
+        session_id=session.id,
+        status=session.status,
+        sample_rate=session.sample_rate,
+        channels=session.channels,
+        codec=session.codec,
+    )
+
+
+@router.post("/capture/chunks", response_model=DeviceCaptureChunkUploadResponse, status_code=status.HTTP_201_CREATED)
+def upload_capture_chunk(
+    chunk_bytes: bytes = Body(..., media_type="application/octet-stream"),
+    x_session_id: str = Header(...),
+    x_chunk_index: int = Header(...),
+    x_start_ms: int = Header(...),
+    x_end_ms: int = Header(...),
+    x_sample_rate: int = Header(default=16000),
+    x_channels: int = Header(default=1),
+    x_codec: str = Header(default="pcm16le"),
+    db: Session = Depends(get_db),
+    device: Device = Depends(get_current_device),
+) -> DeviceCaptureChunkUploadResponse:
+    settings = get_settings()
+    if len(chunk_bytes) == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Chunk payload is empty")
+    if len(chunk_bytes) > settings.max_chunk_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Chunk exceeds max {settings.max_chunk_bytes} bytes",
+        )
+    if x_chunk_index < 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="X-Chunk-Index must be >= 0")
+    if x_end_ms <= x_start_ms:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="X-End-Ms must be greater than X-Start-Ms")
+
+    session = db.scalar(
+        select(CaptureSession).where(CaptureSession.id == x_session_id, CaptureSession.device_id == device.id)
+    )
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Capture session not found")
+    if session.status != SessionStatus.receiving.value:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Session state is {session.status}")
+
+    max_chunk_idx = db.scalar(select(func.max(AudioChunk.chunk_index)).where(AudioChunk.session_id == session.id))
+    expected_seq = (max_chunk_idx + 1) if max_chunk_idx is not None else 0
+
+    if x_chunk_index < expected_seq:
+        return DeviceCaptureChunkUploadResponse(
+            session_id=session.id,
+            chunk_index=x_chunk_index,
+            status="duplicate",
+            ack_seq=expected_seq - 1,
+            next_seq=expected_seq,
+            total_chunks=session.total_chunks,
+            byte_size=len(chunk_bytes),
+        )
+    if x_chunk_index > expected_seq:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Out-of-order chunk. expected={expected_seq} received={x_chunk_index}",
+        )
+
+    chunk = AudioChunk(
+        session_id=session.id,
+        chunk_index=x_chunk_index,
+        start_ms=x_start_ms,
+        end_ms=x_end_ms,
+        sample_rate=x_sample_rate,
+        channels=x_channels,
+        codec=x_codec.strip().lower() or "pcm16le",
+        crc32=crc32_hex(chunk_bytes),
+        byte_size=len(chunk_bytes),
+        object_key=None,
+        pcm_data=chunk_bytes,
+    )
+    db.add(chunk)
+    session.total_chunks = x_chunk_index + 1
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        max_chunk_idx = db.scalar(select(func.max(AudioChunk.chunk_index)).where(AudioChunk.session_id == session.id))
+        expected_seq = (max_chunk_idx + 1) if max_chunk_idx is not None else 0
+        return DeviceCaptureChunkUploadResponse(
+            session_id=session.id,
+            chunk_index=x_chunk_index,
+            status="duplicate",
+            ack_seq=expected_seq - 1,
+            next_seq=expected_seq,
+            total_chunks=session.total_chunks,
+            byte_size=len(chunk_bytes),
+        )
+
+    return DeviceCaptureChunkUploadResponse(
+        session_id=session.id,
+        chunk_index=x_chunk_index,
+        status="stored",
+        ack_seq=x_chunk_index,
+        next_seq=x_chunk_index + 1,
+        total_chunks=session.total_chunks,
+        byte_size=len(chunk_bytes),
+    )
+
+
+@router.post("/capture/sessions/{session_id}/finalize", response_model=DeviceCaptureFinalizeResponse)
+def finalize_capture_session(
+    session_id: str,
+    payload: DeviceCaptureFinalizeRequest,
+    db: Session = Depends(get_db),
+    device: Device = Depends(get_current_device),
+) -> DeviceCaptureFinalizeResponse:
+    session = db.scalar(
+        select(CaptureSession).where(CaptureSession.id == session_id, CaptureSession.device_id == device.id)
+    )
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Capture session not found")
+
+    if session.status in {
+        SessionStatus.queued.value,
+        SessionStatus.transcribing.value,
+        SessionStatus.done.value,
+    }:
+        return DeviceCaptureFinalizeResponse(
+            session_id=session.id,
+            status=session.status,
+            total_chunks=session.total_chunks,
+            queued_for_transcription=session.status in {SessionStatus.queued.value, SessionStatus.transcribing.value},
+        )
+    if session.status != SessionStatus.receiving.value:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Session state is {session.status}")
+
+    if payload.reason:
+        session.error_message = payload.reason.strip()[:255]
+
+    try:
+        total_chunks = assemble_capture_session(db, session)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    _enqueue_transcription(session, db)
+
+    return DeviceCaptureFinalizeResponse(
+        session_id=session.id,
+        status=session.status,
+        total_chunks=total_chunks,
+        queued_for_transcription=True,
+    )
+
+
+@router.post("/captures/upload-wav", response_model=DeviceCaptureUploadResponse, status_code=status.HTTP_201_CREATED)
+def upload_device_capture_wav(
+    wav_bytes: bytes = Body(..., media_type="audio/wav"),
+    x_sample_rate: int = Header(default=16000),
+    x_channels: int = Header(default=1),
+    x_codec: str = Header(default="pcm16le"),
+    db: Session = Depends(get_db),
+    device: Device = Depends(get_current_device),
+) -> DeviceCaptureUploadResponse:
+    settings = get_settings()
+
+    if len(wav_bytes) < 44:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="WAV payload is too small")
+    if len(wav_bytes) > settings.max_db_audio_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"WAV payload exceeds {settings.max_db_audio_bytes} bytes",
+        )
+    if x_sample_rate < 8000 or x_sample_rate > 48000:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="X-Sample-Rate must be between 8000 and 48000")
+    if x_channels < 1 or x_channels > 2:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="X-Channels must be 1 or 2")
+    codec = x_codec.strip().lower() or "pcm16le"
+
+    session = CaptureSession(
+        device_id=device.id,
+        status=SessionStatus.queued.value,
+        sample_rate=x_sample_rate,
+        channels=x_channels,
+        codec=codec,
+        total_chunks=1,
+        audio_blob_wav=wav_bytes,
+        audio_blob_content_type="audio/wav",
+        audio_blob_size_bytes=len(wav_bytes),
+        finalized_at=utc_now(),
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+
+    _enqueue_transcription(session, db)
+
+    return DeviceCaptureUploadResponse(
+        session_id=session.id,
+        status=session.status,
+        queued_for_transcription=True,
+        audio_size_bytes=len(wav_bytes),
+        sample_rate=session.sample_rate,
+        channels=session.channels,
+        codec=session.codec,
     )

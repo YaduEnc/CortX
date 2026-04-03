@@ -65,17 +65,6 @@ struct PairingStartResponse: Decodable {
     let expires_at: Date
 }
 
-struct QueueNetworkProfileRequest: Encodable {
-    let ssid: String
-    let password: String
-    let source: String
-}
-
-struct QueueNetworkProfileResponse: Decodable {
-    let status: String
-    let expires_in_seconds: Int
-}
-
 struct PairedDevice: Decodable, Identifiable {
     let device_id: String
     let device_code: String
@@ -99,7 +88,14 @@ struct AppCaptureSession: Decodable, Identifiable {
     var id: String { session_id }
 
     var isPlayable: Bool {
-        status.lowercased() == "done" && has_audio
+        has_audio
+    }
+
+    var playbackAvailabilityLabel: String {
+        if has_audio {
+            return "Audio Ready"
+        }
+        return status.capitalized
     }
 }
 
@@ -109,26 +105,6 @@ struct AppCaptureTranscript: Decodable {
     let language: String?
     let full_text: String
     let duration_seconds: Double?
-}
-
-struct AppLiveStreamStartRequest: Encodable {
-    let device_code: String
-    let sample_rate: Int
-    let channels: Int
-    let codec: String
-    let frame_duration_ms: Int
-}
-
-struct AppLiveStreamStartResponse: Decodable {
-    let session_id: String
-    let stream_token: String
-    let ws_url: String
-    let status: String
-    let sample_rate: Int
-    let channels: Int
-    let codec: String
-    let frame_duration_ms: Int
-    let expires_at: Date
 }
 
 enum PairingStatus: String {

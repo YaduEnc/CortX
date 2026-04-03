@@ -216,29 +216,102 @@ Response `200`:
 }
 ```
 
-### POST `/v1/device/captures/upload-wav`
+### POST `/v1/device/capture/sessions`
 Headers:
 - `Authorization: Bearer <device_jwt>`
-- `Content-Type: audio/wav`
-- `X-Sample-Rate: 16000` (8000..48000)
-- `X-Channels: 1` (1..2)
-- `X-Codec: pcm16le`
+- `Content-Type: application/json`
 
-Body:
-- raw WAV bytes
-
-Response `201`:
+Request:
 ```json
 {
-  "session_id": "<uuid>",
-  "status": "queued",
-  "queued_for_transcription": true,
-  "audio_size_bytes": 160044,
   "sample_rate": 16000,
   "channels": 1,
   "codec": "pcm16le"
 }
 ```
+Response `201`:
+```json
+{
+  "session_id": "<uuid>",
+  "status": "receiving",
+  "sample_rate": 16000,
+  "channels": 1,
+  "codec": "pcm16le"
+}
+```
+
+### POST `/v1/device/capture/chunks`
+Headers:
+- `Authorization: Bearer <device_jwt>`
+- `Content-Type: application/octet-stream`
+- `X-Session-Id: <session_uuid>`
+- `X-Chunk-Index: 0` (0-based, strict sequence)
+- `X-Start-Ms: 0`
+- `X-End-Ms: 10000`
+- `X-Sample-Rate: 16000`
+- `X-Channels: 1`
+- `X-Codec: pcm16le`
+
+Body:
+- raw PCM16LE bytes for this chunk
+
+Response `201`:
+```json
+{
+  "session_id": "<uuid>",
+  "chunk_index": 0,
+  "status": "stored",
+  "ack_seq": 0,
+  "next_seq": 1,
+  "total_chunks": 1,
+  "byte_size": 320000
+}
+```
+
+Duplicate re-send response `201`:
+```json
+{
+  "session_id": "<uuid>",
+  "chunk_index": 0,
+  "status": "duplicate",
+  "ack_seq": 0,
+  "next_seq": 1,
+  "total_chunks": 1,
+  "byte_size": 320000
+}
+```
+
+### POST `/v1/device/capture/sessions/{session_id}/finalize`
+Headers:
+- `Authorization: Bearer <device_jwt>`
+- `Content-Type: application/json`
+
+Request:
+```json
+{
+  "reason": "device_stop"
+}
+```
+Response `200`:
+```json
+{
+  "session_id": "<uuid>",
+  "status": "queued",
+  "total_chunks": 5,
+  "queued_for_transcription": true
+}
+```
+
+Notes:
+- Endpoint is idempotent for already-finalized sessions (`queued`, `transcribing`, `done`).
+
+### POST `/v1/device/captures/upload-wav` (compatibility route)
+Headers:
+- `Authorization: Bearer <device_jwt>`
+- `Content-Type: audio/wav`
+
+Body:
+- full WAV bytes (single-shot upload)
 
 ## 4) Network Profile APIs
 
@@ -289,6 +362,13 @@ Response `200` (when none queued):
 Headers:
 - `Authorization: Bearer <app_jwt>`
 
+Returns capture rows for the logged-in user, including statuses like:
+- `receiving`
+- `queued`
+- `transcribing`
+- `done`
+- `failed`
+
 ### GET `/v1/app/captures/{session_id}/audio`
 Headers:
 - `Authorization: Bearer <app_jwt>`
@@ -309,11 +389,4 @@ Headers:
 
 Current behavior:
 - Returns `410 Gone`
-- Detail: `"Live packet streaming is deprecated. Use device direct upload /v1/device/captures/upload-wav."`
-
-## Not in Active Contract
-
-The following flows are intentionally excluded from the active v1 contract:
-- WebSocket streaming ingest (`/v1/stream/ws`)
-- legacy chunk/session capture ingest routes
-- ad-hoc/experimental command detection routes
+- Detail points to device capture session/chunk/finalize APIs.

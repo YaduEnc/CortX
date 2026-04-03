@@ -1,15 +1,17 @@
 import logging
 import tempfile
+import time
+from datetime import timedelta
 
+from celery.exceptions import Retry
 from celery import shared_task
 from sqlalchemy import delete, select
 
 from app.db.session import SessionLocal
-from app.models.capture import AudioChunk, CaptureSession, SessionStatus
+from app.models.capture import CaptureSession, SessionStatus
 from app.models.transcript import Transcript, TranscriptSegment
-from app.services.audio import pcm_chunks_to_wav
-from app.services.storage import get_storage
 from app.services.transcriber import get_transcriber
+from app.utils.time import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +19,7 @@ logger = logging.getLogger(__name__)
 @shared_task(bind=True, name="app.workers.tasks.process_session_transcription")
 def process_session_transcription(self, session_id: str) -> dict:
     db = SessionLocal()
-    storage = get_storage()
+    started = time.perf_counter()
 
     try:
         session = db.scalar(select(CaptureSession).where(CaptureSession.id == session_id))
@@ -29,28 +31,12 @@ def process_session_transcription(self, session_id: str) -> dict:
         session.error_message = None
         db.commit()
 
-        chunks = db.scalars(
-            select(AudioChunk).where(AudioChunk.session_id == session_id).order_by(AudioChunk.chunk_index.asc())
-        ).all()
-
-        if not chunks:
+        wav_bytes = session.audio_blob_wav
+        if wav_bytes is None or len(wav_bytes) < 44:
             session.status = SessionStatus.failed.value
-            session.error_message = "No chunks found"
+            session.error_message = "Missing direct WAV payload"
             db.commit()
-            return {"status": "error", "reason": "no_chunks"}
-
-        chunk_bytes = [storage.get_bytes(chunk.object_key) for chunk in chunks]
-        wav_bytes = pcm_chunks_to_wav(
-            chunk_bytes=chunk_bytes,
-            sample_rate=session.sample_rate,
-            channels=session.channels,
-            sample_width_bytes=2,
-        )
-
-        assembled_key = f"assembled/{session.id}/full.wav"
-        storage.put_bytes(assembled_key, wav_bytes, content_type="audio/wav")
-        session.assembled_object_key = assembled_key
-        db.commit()
+            return {"status": "error", "reason": "missing_direct_wav"}
 
         with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
             tmp.write(wav_bytes)
@@ -89,13 +75,36 @@ def process_session_transcription(self, session_id: str) -> dict:
 
         session.status = SessionStatus.done.value
         session.error_message = None
+        session.finalized_at = session.finalized_at or utc_now()
         db.commit()
 
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        logger.info("Transcription completed session=%s chunks=%s elapsed_ms=%s", session.id, session.total_chunks, elapsed_ms)
+
         return {"status": "ok", "session_id": session.id}
+
+    except Retry:
+        raise
 
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         session = db.scalar(select(CaptureSession).where(CaptureSession.id == session_id))
+        # Retry transient failures with exponential backoff.
+        if session and self.request.retries < 5:
+            retry_count = self.request.retries + 1
+            countdown = min(300, 15 * (2 ** self.request.retries))
+            session.status = SessionStatus.queued.value
+            session.error_message = f"transcription_retry_{retry_count}: {str(exc)[:220]}"
+            db.commit()
+            logger.warning(
+                "Transcription retry scheduled session=%s retry=%s countdown=%ss error=%s",
+                session_id,
+                retry_count,
+                countdown,
+                exc,
+            )
+            raise self.retry(exc=exc, countdown=countdown)
+
         if session:
             session.status = SessionStatus.failed.value
             session.error_message = str(exc)
@@ -103,5 +112,48 @@ def process_session_transcription(self, session_id: str) -> dict:
         logger.exception("Failed transcription for session %s", session_id)
         return {"status": "error", "reason": str(exc)}
 
+    finally:
+        db.close()
+
+
+@shared_task(bind=True, name="app.workers.tasks.recover_stuck_transcriptions")
+def recover_stuck_transcriptions(self, limit: int = 100) -> dict:
+    """
+    Requeue stale transcribing sessions and all queued sessions.
+    Safe to run multiple times.
+    """
+    db = SessionLocal()
+    try:
+        now = utc_now()
+        stale_cutoff = now - timedelta(minutes=5)
+        clamped_limit = max(1, min(limit, 500))
+
+        stale_sessions = db.scalars(
+            select(CaptureSession).where(
+                CaptureSession.status == SessionStatus.transcribing.value,
+                CaptureSession.finalized_at.is_not(None),
+                CaptureSession.finalized_at < stale_cutoff,
+            ).limit(clamped_limit)
+        ).all()
+
+        for session in stale_sessions:
+            session.status = SessionStatus.queued.value
+            session.error_message = "recovered_from_stale_transcribing"
+
+        queued_ids = db.scalars(
+            select(CaptureSession.id).where(CaptureSession.status == SessionStatus.queued.value).limit(clamped_limit)
+        ).all()
+        db.commit()
+
+        enqueued = 0
+        for sid in queued_ids:
+            self.app.send_task("app.workers.tasks.process_session_transcription", args=[sid], queue="transcription")
+            enqueued += 1
+
+        return {"status": "ok", "stale_recovered": len(stale_sessions), "enqueued": enqueued}
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.exception("Failed recovering stuck transcriptions")
+        return {"status": "error", "reason": str(exc)}
     finally:
         db.close()

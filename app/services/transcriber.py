@@ -1,4 +1,5 @@
 from functools import lru_cache
+import os
 
 from faster_whisper import WhisperModel
 
@@ -8,15 +9,34 @@ from app.core.config import get_settings
 class LocalWhisperTranscriber:
     def __init__(self) -> None:
         settings = get_settings()
-        self.model_name = settings.whisper_model_size
+        model_path = (settings.whisper_model_path or "").strip()
+        model_ref = model_path or settings.whisper_model_size
+        if model_path and not os.path.isdir(model_path):
+            raise RuntimeError(f"Configured WHISPER_MODEL_PATH does not exist: {model_path}")
+
+        self.model_name = model_ref
         self.model = WhisperModel(
-            settings.whisper_model_size,
+            model_ref,
             device=settings.whisper_device,
             compute_type=settings.whisper_compute_type,
+            download_root=(settings.whisper_download_root or None),
         )
 
-    def transcribe(self, audio_path: str) -> dict:
-        segments_iter, info = self.model.transcribe(audio_path, vad_filter=True, beam_size=1)
+    def transcribe(
+        self,
+        audio_path: str,
+        *,
+        vad_filter: bool = True,
+        beam_size: int = 1,
+        language: str | None = None,
+    ) -> dict:
+        segments_iter, info = self.model.transcribe(
+            audio_path,
+            vad_filter=vad_filter,
+            beam_size=beam_size,
+            language=language,
+            condition_on_previous_text=False,
+        )
 
         segments = []
         full_text_parts: list[str] = []

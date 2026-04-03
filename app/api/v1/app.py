@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_app_user
 from app.core.config import get_settings
-from app.core.security import create_app_access_token, create_stream_access_token, hash_pair_token, hash_secret, verify_secret
+from app.core.security import create_app_access_token, hash_pair_token, hash_secret, verify_secret
 from app.db.session import get_db
 from app.models.capture import CaptureSession, SessionStatus
 from app.models.app_user import AppUser
@@ -21,8 +21,6 @@ from app.services.storage import get_storage
 from app.schemas.app_user import (
     AppActionStatusResponse,
     AppCaptureListItemResponse,
-    AppLiveStreamStartRequest,
-    AppLiveStreamStartResponse,
     AppMeResponse,
     AppCaptureTranscriptResponse,
     AppAuthRequest,
@@ -203,63 +201,11 @@ def list_user_devices(
     ]
 
 
-@router.post("/live/start", response_model=AppLiveStreamStartResponse, status_code=status.HTTP_201_CREATED)
-def start_live_stream_for_app(
-    payload: AppLiveStreamStartRequest,
-    db: Session = Depends(get_db),
-    user: AppUser = Depends(get_current_app_user),
-) -> AppLiveStreamStartResponse:
-    codec = payload.codec.lower().strip()
-    if codec != "pcm16le":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only pcm16le codec is supported")
-
-    device = db.scalar(
-        select(Device)
-        .join(
-            DeviceUserBinding,
-            (DeviceUserBinding.device_id == Device.id)
-            & (DeviceUserBinding.user_id == user.id)
-            & (DeviceUserBinding.is_active.is_(True)),
-        )
-        .where(Device.device_code == payload.device_code.strip())
-    )
-    if not device:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paired device not found for this user")
-
-    session = CaptureSession(
-        device_id=device.id,
-        sample_rate=payload.sample_rate,
-        channels=payload.channels,
-        codec=codec,
-        status=SessionStatus.receiving.value,
-    )
-    db.add(session)
-    db.commit()
-    db.refresh(session)
-
-    settings = get_settings()
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=settings.stream_token_ttl_seconds)
-    stream_token = create_stream_access_token(
-        session_id=session.id,
-        device_id=device.id,
-        sample_rate=payload.sample_rate,
-        channels=payload.channels,
-        codec=codec,
-        frame_duration_ms=payload.frame_duration_ms,
-        ttl_seconds=settings.stream_token_ttl_seconds,
-    )
-    ws_url = f"/v1/stream/ws?stream_token={stream_token}"
-
-    return AppLiveStreamStartResponse(
-        session_id=session.id,
-        stream_token=stream_token,
-        ws_url=ws_url,
-        status=session.status,
-        sample_rate=payload.sample_rate,
-        channels=payload.channels,
-        codec=codec,
-        frame_duration_ms=payload.frame_duration_ms,
-        expires_at=expires_at,
+@router.post("/live/start")
+def start_live_stream_for_app() -> dict:
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Live packet streaming is deprecated. Use device direct capture session APIs: /v1/device/capture/sessions, /v1/device/capture/chunks, /v1/device/capture/sessions/{id}/finalize.",
     )
 
 
@@ -325,7 +271,7 @@ def list_user_captures(
             started_at=session.started_at,
             finalized_at=session.finalized_at,
             duration_seconds=transcript.duration_seconds if transcript else None,
-            has_audio=bool(session.assembled_object_key),
+            has_audio=bool((session.audio_blob_size_bytes or 0) > 0 or session.assembled_object_key),
         )
         for session, device, transcript in rows
     ]
@@ -383,10 +329,16 @@ def stream_user_capture_audio(
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
-    if session.status != SessionStatus.done.value:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Audio not ready yet")
+    if session.audio_blob_wav:
+        headers = {
+            "Content-Disposition": f'inline; filename="{session.id}.wav"',
+            "Cache-Control": "no-store",
+        }
+        return Response(content=bytes(session.audio_blob_wav), media_type="audio/wav", headers=headers)
 
     if not session.assembled_object_key:
+        if session.status in {SessionStatus.receiving.value, SessionStatus.queued.value, SessionStatus.transcribing.value}:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Audio not ready yet")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assembled audio not found")
 
     audio_bytes = get_storage().get_bytes(session.assembled_object_key)

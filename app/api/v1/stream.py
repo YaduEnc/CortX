@@ -10,9 +10,9 @@ from app.core.security import decode_stream_access_token
 from app.db.session import SessionLocal
 from app.models.capture import AudioChunk, CaptureSession, SessionStatus
 from app.services.capture_finalize import assemble_capture_session
-from app.services.storage import get_storage
 from app.utils.crc import crc32_hex
 from app.utils.time import utc_now
+from app.workers.celery_app import celery_app
 
 router = APIRouter(prefix="/stream", tags=["stream"])
 settings = get_settings()
@@ -144,9 +144,6 @@ async def websocket_stream(websocket: WebSocket) -> None:
                     await _send_json(websocket, {"type": "nack", "expected_seq": expected_seq, "received_seq": seq})
                     continue
 
-                object_key = f"raw/{session.id}/{seq:06d}.pcm"
-                get_storage().put_bytes(object_key, pcm, content_type="application/octet-stream")
-
                 chunk = AudioChunk(
                     session_id=session.id,
                     chunk_index=seq,
@@ -157,7 +154,8 @@ async def websocket_stream(websocket: WebSocket) -> None:
                     codec=codec,
                     crc32=crc32_hex(pcm),
                     byte_size=len(pcm),
-                    object_key=object_key,
+                    object_key=None,
+                    pcm_data=pcm,
                 )
                 db.add(chunk)
                 session.total_chunks = seq + 1
@@ -202,6 +200,19 @@ async def websocket_stream(websocket: WebSocket) -> None:
                 except ValueError as exc:
                     await _send_json(websocket, {"type": "error", "code": "empty_session", "message": str(exc)})
                     continue
+
+                try:
+                    celery_app.send_task("app.workers.tasks.process_session_transcription", args=[session.id], queue="transcription")
+                except Exception as exc:  # noqa: BLE001
+                    session.status = SessionStatus.failed.value
+                    session.error_message = f"Failed to enqueue transcription: {exc}"
+                    db.commit()
+                    await _send_json(
+                        websocket,
+                        {"type": "error", "code": "queue_unavailable", "message": "Transcription queue unavailable"},
+                    )
+                    await websocket.close(code=1011)
+                    return
 
                 await _send_json(
                     websocket,

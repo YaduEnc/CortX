@@ -144,7 +144,11 @@ def normalize_payload(payload: dict[str, Any], max_items_per_type: int) -> dict[
     normalized["entities"] = []
 
     for item_type in ALLOWED_ITEM_TYPES:
-        raw_items = payload.get(item_type) or []
+        raw_items = payload.get(item_type)
+        if raw_items is None:
+            raw_items = payload.get(f"{item_type}s")
+        if raw_items is None:
+            raw_items = []
         if not isinstance(raw_items, list):
             continue
         for raw in raw_items[: max_items_per_type]:

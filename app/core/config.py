@@ -28,12 +28,15 @@ class Settings(BaseSettings):
     s3_use_ssl: bool = False
 
     whisper_model_size: str = "small"
+    whisper_model_path: str | None = None
+    whisper_download_root: str | None = None
     whisper_compute_type: str = "int8"
     whisper_device: str = "cpu"
 
-    max_chunk_bytes: int = 256000
+    max_chunk_bytes: int = 768000
     stream_token_ttl_seconds: int = 900
     stream_max_frame_bytes: int = 32768
+    max_db_audio_bytes: int = 5_000_000
     password_reset_token_ttl_seconds: int = 900
 
 
