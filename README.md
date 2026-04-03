@@ -1,21 +1,39 @@
 # SecondMind Backend (Device Direct DB Upload)
 
-Production-oriented backend + app pairing foundation for ESP32 device direct WAV upload into PostgreSQL and app playback.
+Production-oriented backend + app pairing foundation for ESP32 device direct audio upload into PostgreSQL, local transcription, and app playback.
 
-## Tech Stack
+## Live Context & Tracker
+- Detailed project tracker: `REDBY.md`
+- API contract freeze: `docs/api_contract_v1_freeze.md`
+
+## Stack
 - FastAPI (API)
-- PostgreSQL (metadata)
-- MinIO/S3 (audio storage)
-- Redis + Celery (async processing)
-- faster-whisper (local STT)
-- Docker Compose (local/staging runtime)
+- PostgreSQL (captures/transcripts)
+- Redis + Celery (async transcription)
+- faster-whisper (self-hosted STT)
+- Docker Compose (runtime)
 
-## Architecture
-1. ESP32 pairs with user (BLE + backend claim flow).
-2. ESP32 records one WAV session on wake/stop trigger.
-3. ESP32 uploads WAV directly to backend (`/v1/device/captures/upload-wav`).
-4. Backend stores WAV in PostgreSQL (`bytea`) and queues transcription.
-5. App fetches captures and plays audio from API (`/v1/app/captures/{id}/audio`).
+## High-Level Flow
+```mermaid
+flowchart LR
+  A["ESP32"] -->|"pair + capture chunks"| B["FastAPI"]
+  B -->|"audio + metadata"| C["PostgreSQL"]
+  B -->|"enqueue transcription"| D["Celery/Redis"]
+  D -->|"local Whisper"| C
+  E["iOS App"] -->|"captures/audio/transcript"| B
+```
+
+## Current Feature Tracker
+
+| Feature | Status |
+|---|---|
+| BLE pairing (app <-> ESP32 <-> backend) | Done |
+| Continuous chunk upload (ping-pong buffers) | Done |
+| Rolling auto-finalize session upload | Done |
+| DB-stored WAV playback via API | Done |
+| Local faster-whisper transcription worker | Done |
+| Retry + stale-session recovery for transcription | Done |
+| Self-hosted Whisper model path support | Done |
 
 ## Quick Start
 1. Create env file:
@@ -31,7 +49,23 @@ docker compose up --build
 http://localhost:8000/v1
 ```
 
-## API Endpoints
+## Self-Hosted Whisper Model (Recommended)
+Use your own local Whisper model files so transcription does not depend on runtime model fetches.
+
+1. Download model once into shared Docker model volume:
+```bash
+docker compose run --rm api python scripts/download_whisper_model.py --model-size small --output-dir /models
+```
+2. Set in `.env`:
+```env
+WHISPER_MODEL_PATH=/models/faster-whisper-small
+```
+3. Restart worker:
+```bash
+docker compose up -d worker
+```
+
+## Core Endpoints
 - `GET /v1/health`
 - `POST /v1/app/register`
 - `POST /v1/app/auth`
@@ -41,26 +75,19 @@ http://localhost:8000/v1
 - `GET /v1/app/captures/{session_id}/transcript`
 - `POST /v1/device/register` (requires `X-Admin-Key`)
 - `POST /v1/device/auth`
-- `POST /v1/device/captures/upload-wav` (device bearer token; stores WAV in PostgreSQL)
+- `POST /v1/device/capture/sessions`
+- `POST /v1/device/capture/chunks`
+- `POST /v1/device/capture/sessions/{session_id}/finalize`
 - `POST /v1/pairing/start`
 - `POST /v1/device/pairing/complete`
-- `POST /v1/app/live/start` (deprecated, returns 410)
 
-## IoT Team Guide
-Detailed integration contract is documented at:
-- `docs/iot_pairing_guide.md`
-- `docs/ble_phone_gateway_flow.md`
-
-## App Team Guide
-- `docs/app_pairing_api_flow.md`
-
-## Deployment Guide
-- `docs/cloudflare_tunnel_deploy_hamza.md`
-
-## Firmware Reference
-- `firmware/arduino_ide/SecondMindESP32S3/README_ARDUINO.md`
+## Team Guides
+- IoT: `docs/iot_pairing_guide.md`
+- BLE gateway: `docs/ble_phone_gateway_flow.md`
+- App pairing API: `docs/app_pairing_api_flow.md`
+- Deployment: `docs/cloudflare_tunnel_deploy_hamza.md`
+- Firmware: `firmware/arduino_ide/SecondMindESP32S3/README_ARDUINO.md`
 
 ## Notes
-- Raw/assembled audio is now persisted in PostgreSQL (`bytea`) for DB-first capture flows.
-- Database schema currently auto-creates on startup via SQLAlchemy metadata.
-- For long-term production, add Alembic migration workflow.
+- Capture and transcript schema are DB-first for reliable retrieval.
+- For long-term production lifecycle management, keep using migrations and retention policies.
