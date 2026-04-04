@@ -31,6 +31,7 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
 
     private var readDeviceInfo: BLEDeviceInfo?
     private var readPairNonce: String?
+    private var latestPairStatus: PairingStatus = .idle
     private var backendPairingRequested = false
     private var requestInFlightTask: Task<Void, Never>?
     private var statusTimeoutTask: Task<Void, Never>?
@@ -137,6 +138,7 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
         pairingStatus = .idle
         readDeviceInfo = nil
         readPairNonce = nil
+        latestPairStatus = .idle
         discoveredDeviceCode = nil
         selectedPeripheralID = nil
         connectedPeripheral = nil
@@ -170,6 +172,8 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
             return
         }
         guard !deviceCode.isEmpty, !pairNonce.isEmpty else { return }
+        guard pairNonce.lowercased() != "not_in_pair_mode" else { return }
+        guard latestPairStatus == .pairing_mode else { return }
 
         backendPairingRequested = true
         statusMessage = "Requesting pair token..."
@@ -234,6 +238,7 @@ final class BLEPairingViewModel: NSObject, ObservableObject {
 
     private func handlePairStatusUpdate(_ rawStatus: String) {
         let status = PairingStatus(rawValueOrUnknown: rawStatus)
+        latestPairStatus = status
         pairingStatus = status
         statusMessage = status.userLabel
 
@@ -425,7 +430,8 @@ extension BLEPairingViewModel: CBPeripheralDelegate {
             readDeviceInfo = info
             discoveredDeviceCode = info.deviceCode
         case AppConfig.BLE.pairNonceCharacteristicUUID:
-            readPairNonce = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let nonce = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            readPairNonce = nonce.lowercased() == "not_in_pair_mode" ? nil : nonce
         case AppConfig.BLE.pairStatusCharacteristicUUID:
             handlePairStatusUpdate(text.trimmingCharacters(in: .whitespacesAndNewlines))
         default:

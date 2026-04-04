@@ -9,11 +9,13 @@ from app.core.security import create_device_access_token, hash_secret, verify_se
 from app.db.session import get_db
 from app.models.capture import AudioChunk, CaptureSession, SessionStatus
 from app.models.device import Device
+from app.models.pairing import DeviceUserBinding
 from app.schemas.device import (
     DeviceAuthRequest,
     DeviceCaptureChunkUploadResponse,
     DeviceCaptureFinalizeRequest,
     DeviceCaptureFinalizeResponse,
+    DevicePairingStatusResponse,
     DeviceHeartbeatRequest,
     DeviceHeartbeatResponse,
     DeviceCaptureSessionStartRequest,
@@ -80,6 +82,31 @@ def authenticate_device(payload: DeviceAuthRequest, db: Session = Depends(get_db
     token = create_device_access_token(device.id)
     settings = get_settings()
     return TokenResponse(access_token=token, expires_in_minutes=settings.jwt_expires_minutes)
+
+
+@router.get("/pairing/status", response_model=DevicePairingStatusResponse)
+def get_device_pairing_status(
+    db: Session = Depends(get_db),
+    device: Device = Depends(get_current_device),
+) -> DevicePairingStatusResponse:
+    binding = db.scalar(
+        select(DeviceUserBinding).where(
+            DeviceUserBinding.device_id == device.id,
+            DeviceUserBinding.is_active.is_(True),
+        )
+    )
+
+    device.last_seen_at = utc_now()
+    db.commit()
+
+    return DevicePairingStatusResponse(
+        status="paired" if binding else "unpaired",
+        device_id=device.id,
+        device_code=device.device_code,
+        is_paired=binding is not None,
+        paired_at=binding.paired_at if binding else None,
+        user_id=binding.user_id if binding else None,
+    )
 
 
 @router.post("/network-profile/pull", response_model=DeviceNetworkProfilePullResponse)
@@ -267,6 +294,20 @@ def finalize_capture_session(
     try:
         total_chunks = assemble_capture_session(db, session)
     except ValueError as exc:
+        if str(exc) == "Cannot finalize empty session":
+            session.status = SessionStatus.failed.value
+            session.total_chunks = 0
+            if not session.error_message:
+                session.error_message = "empty_session"
+            session.finalized_at = utc_now()
+            db.commit()
+            db.refresh(session)
+            return DeviceCaptureFinalizeResponse(
+                session_id=session.id,
+                status=session.status,
+                total_chunks=0,
+                queued_for_transcription=False,
+            )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     _enqueue_transcription(session, db)

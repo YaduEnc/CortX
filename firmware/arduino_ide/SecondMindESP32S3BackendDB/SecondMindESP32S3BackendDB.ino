@@ -44,7 +44,7 @@ const char* WIFI_SSID     = "Yadu Phone";
 const char* WIFI_PASSWORD = "0000110000";
 
 const char* API_BASE_URL  = "https://hamza.yaduraj.me/v1";
-const char* DEVICE_CODE   = "manu";
+const char* DEVICE_CODE   = "shasshwat";
 const char* DEVICE_SECRET = "6109994804";
 const char* DEVICE_BLE_NAME = "SecondMind";
 
@@ -65,6 +65,7 @@ const bool AUTO_STREAM_DEFAULT = true;
 const bool AUTO_ROLLING_FINALIZE = true;
 const uint32_t AUTO_FINALIZE_AFTER_CHUNKS = 2;  // auto-send one file every ~16s with current chunk size
 const uint32_t PAIR_MODE_WINDOW_MS = 300000;  // 5 min
+const uint32_t PAIR_STATUS_SYNC_INTERVAL_MS = 30000;
 const int PAIR_BUTTON_PIN = -1;               // set GPIO if using hardware button
 const uint32_t LONG_PRESS_MS = 5000;
 
@@ -106,6 +107,7 @@ static bool g_autoStream = AUTO_STREAM_DEFAULT;
 static volatile bool g_streamFault = false;
 static volatile bool g_finalizeRequested = false;
 static volatile bool g_nonRetryableChunkFailure = false;
+static volatile uint32_t g_uploadedChunksInSession = 0;
 static String g_finalizeReason = "device_stop";
 static uint32_t g_lastWifiBeginMs = 0;
 
@@ -125,6 +127,7 @@ static bool g_pairTokenReady = false;
 static bool g_isPairingMode = false;
 static bool g_isPaired = false;
 static uint32_t g_pairModeEndAt = 0;
+static uint32_t g_lastPairStatusSyncMs = 0;
 static uint32_t g_buttonPressedAt = 0;
 static bool g_buttonWasDown = false;
 static uint32_t g_lastNotPairedLogMs = 0;
@@ -133,6 +136,10 @@ bool authDevice();
 bool runContinuousChunkOnce();
 void handleSerialCommands(bool allowImmediateRun = true);
 void requestFinalize(const char* reason);
+bool syncPairingStateWithBackend(bool force = false);
+
+static const char* PREF_KEY_PAIRED = "paired";
+static const char* PREF_KEY_PAIR_CODE = "pair_code";
 
 // ---------------------------------------------------------------------
 // HELPERS
@@ -160,6 +167,28 @@ void requestFinalize(const char* reason) {
     g_finalizeReason = "device_stop";
   }
   g_finalizeRequested = true;
+}
+
+void persistLocalPairingState(bool isPaired) {
+  g_isPaired = isPaired;
+  g_prefs.putBool(PREF_KEY_PAIRED, isPaired);
+  g_prefs.putString(PREF_KEY_PAIR_CODE, DEVICE_CODE);
+}
+
+bool restoreLocalPairingState() {
+  String savedDeviceCode = g_prefs.getString(PREF_KEY_PAIR_CODE, "");
+  bool savedPaired = g_prefs.getBool(PREF_KEY_PAIRED, false);
+
+  if (savedDeviceCode != String(DEVICE_CODE)) {
+    if (!savedDeviceCode.isEmpty() || savedPaired) {
+      Serial.printf("[PAIR] Clearing stale local pairing state for old device_code=%s\n", savedDeviceCode.c_str());
+    }
+    persistLocalPairingState(false);
+    return false;
+  }
+
+  g_isPaired = savedPaired;
+  return savedPaired;
 }
 
 void setPairStatus(const String& status) {
@@ -365,6 +394,84 @@ bool authDevice() {
   return true;
 }
 
+bool fetchBackendPairingState(bool& outIsPaired) {
+  outIsPaired = false;
+
+  if (!ensureWiFi()) return false;
+  if (g_deviceJwt.isEmpty() && !authDevice()) return false;
+
+  auto doFetch = [&](const String& token, String& respOut, int& codeOut) -> bool {
+    WiFiClientSecure client;
+    client.setInsecure();
+
+    HTTPClient http;
+    String url = apiUrl("/device/pairing/status");
+    if (!http.begin(client, url)) {
+      Serial.println("[PAIR] status http.begin failed");
+      return false;
+    }
+
+    http.setTimeout(15000);
+    http.addHeader("Authorization", "Bearer " + token);
+
+    codeOut = http.GET();
+    respOut = http.getString();
+    http.end();
+    return true;
+  };
+
+  int code = 0;
+  String resp;
+  if (!doFetch(g_deviceJwt, resp, code)) return false;
+  if (code == 401) {
+    if (!authDevice()) return false;
+    if (!doFetch(g_deviceJwt, resp, code)) return false;
+  }
+
+  if (code != 200) {
+    Serial.printf("[PAIR] status HTTP %d failed: %s\n", code, resp.c_str());
+    return false;
+  }
+
+  StaticJsonDocument<512> doc;
+  if (deserializeJson(doc, resp)) {
+    Serial.println("[PAIR] status JSON parse error");
+    return false;
+  }
+
+  outIsPaired = doc["is_paired"] | false;
+  return true;
+}
+
+bool syncPairingStateWithBackend(bool force) {
+  const uint32_t now = millis();
+  if (!force && g_lastPairStatusSyncMs != 0 && (now - g_lastPairStatusSyncMs) < PAIR_STATUS_SYNC_INTERVAL_MS) {
+    return true;
+  }
+
+  bool backendPaired = false;
+  if (!fetchBackendPairingState(backendPaired)) {
+    return false;
+  }
+
+  g_lastPairStatusSyncMs = now;
+
+  if (backendPaired != g_isPaired) {
+    Serial.printf("[PAIR] Backend pairing state changed: local=%s backend=%s\n",
+                  g_isPaired ? "paired" : "unpaired",
+                  backendPaired ? "paired" : "unpaired");
+  }
+
+  persistLocalPairingState(backendPaired);
+
+  if (!backendPaired && !g_activeSessionId.isEmpty()) {
+    g_autoStream = false;
+    requestFinalize("device_unpaired");
+  }
+
+  return true;
+}
+
 // ---------------------------------------------------------------------
 // CAPTURE SESSION API
 // ---------------------------------------------------------------------
@@ -552,6 +659,13 @@ void releaseBufferSemaphore(uint8_t* buf) {
   }
 }
 
+void resetLocalSessionState() {
+  g_activeSessionId = "";
+  g_nextChunkIndex = 0;
+  g_useBufferA = true;
+  g_uploadedChunksInSession = 0;
+}
+
 void uploaderTask(void* param) {
   (void)param;
   ChunkUploadJob job;
@@ -562,6 +676,9 @@ void uploaderTask(void* param) {
       for (int attempt = 0; attempt < 3; attempt++) {
         if (uploadCaptureChunkHttp(job)) {
           ok = true;
+          if (!g_activeSessionId.isEmpty() && strcmp(job.sessionId, g_activeSessionId.c_str()) == 0) {
+            g_uploadedChunksInSession++;
+          }
           break;
         }
         if (g_nonRetryableChunkFailure) break;
@@ -652,8 +769,7 @@ bool completePairingWithBackend(const String& pairToken) {
     return false;
   }
 
-  g_isPaired = true;
-  g_prefs.putBool("paired", true);
+  persistLocalPairingState(true);
   Serial.println("[PAIR] Device paired successfully");
   return true;
 }
@@ -715,6 +831,11 @@ void setupBle() {
 }
 
 void enterPairingMode() {
+  g_autoStream = false;
+  if (!g_activeSessionId.isEmpty()) {
+    requestFinalize("pairing_mode");
+  }
+
   g_isPairingMode = true;
   g_pairTokenReady = false;
   g_pairTokenFromApp = "";
@@ -738,8 +859,8 @@ void exitPairingMode(const String& finalStatus) {
   setPairStatus(finalStatus);
 
   if (finalStatus == "success") {
-    g_isPaired = true;
-    g_prefs.putBool("paired", true);
+    persistLocalPairingState(true);
+    g_autoStream = AUTO_STREAM_DEFAULT;
     delay(200);
     setPairStatus("idle");
   }
@@ -786,6 +907,12 @@ void handlePairingState() {
 // STREAM CONTROL
 // ---------------------------------------------------------------------
 bool ensureSessionStarted() {
+  if (!syncPairingStateWithBackend(true)) return false;
+  if (!g_isPaired) {
+    Serial.println("[SESSION] Backend reports device is not paired");
+    return false;
+  }
+
   if (!g_activeSessionId.isEmpty()) return true;
 
   String sid;
@@ -805,17 +932,34 @@ bool stopAndFinalizeSession(const String& reason) {
     return false;
   }
 
+  if (g_uploadedChunksInSession == 0) {
+    Serial.println("[SESSION] No uploaded chunks in session; skipping finalize");
+    resetLocalSessionState();
+    return true;
+  }
+
   if (!finalizeCaptureSessionHttp(g_activeSessionId, reason)) {
     return false;
   }
 
-  g_activeSessionId = "";
-  g_nextChunkIndex = 0;
-  g_useBufferA = true;
+  resetLocalSessionState();
   return true;
 }
 
 bool runContinuousChunkOnce() {
+  if (!syncPairingStateWithBackend(false)) {
+    Serial.println("[PAIR] Skipping chunk because pairing status sync failed");
+    return false;
+  }
+  if (!g_isPaired) {
+    Serial.println("[REC] Device is not paired; chunk upload blocked");
+    return false;
+  }
+  if (g_isPairingMode) {
+    Serial.println("[REC] Device is in pairing mode; stream paused");
+    return false;
+  }
+
   SemaphoreHandle_t sem = g_useBufferA ? g_bufASem : g_bufBSem;
   uint8_t* buf = g_useBufferA ? g_chunkBufA : g_chunkBufB;
 
@@ -839,6 +983,7 @@ bool runContinuousChunkOnce() {
     }
     g_activeSessionId = sid;
     g_nextChunkIndex = 0;
+    g_uploadedChunksInSession = 0;
   }
 
   // Index must be captured AFTER potential session reset to avoid stale non-zero 
@@ -901,8 +1046,7 @@ void processSerialCommand(char cmd, bool allowImmediateRun) {
       enterPairingMode();
       break;
     case 'x':
-      g_isPaired = false;
-      g_prefs.putBool("paired", false);
+      persistLocalPairingState(false);
       Serial.println("[PAIR] paired flag cleared");
       enterPairingMode();
       break;
@@ -911,6 +1055,14 @@ void processSerialCommand(char cmd, bool allowImmediateRun) {
       break;
     case 'a':
       g_autoStream = !g_autoStream;
+      if (g_autoStream && !syncPairingStateWithBackend(true)) {
+        Serial.println("[PAIR] Cannot enable stream until pairing status is verified");
+        g_autoStream = false;
+      }
+      if (g_autoStream && !g_isPaired) {
+        Serial.println("[PAIR] Device is not paired; stream remains OFF");
+        g_autoStream = false;
+      }
       Serial.printf("[REC] Continuous chunk stream %s\n", g_autoStream ? "ON" : "OFF");
       if (!g_autoStream) requestFinalize("device_stop");
       break;
@@ -961,7 +1113,7 @@ void setup() {
 #endif
 
   g_prefs.begin("secondmind", false);
-  g_isPaired = g_prefs.getBool("paired", false);
+  g_isPaired = restoreLocalPairingState();
   g_autoStream = AUTO_STREAM_DEFAULT;
 
   g_chunkBufA = static_cast<uint8_t*>(ps_malloc(CHUNK_BYTES));
@@ -1005,6 +1157,8 @@ void setup() {
 
   if (!authDevice()) {
     Serial.println("[AUTH] Initial auth failed. Will retry in loop.");
+  } else if (!syncPairingStateWithBackend(true)) {
+    Serial.println("[PAIR] Initial pairing-state sync failed. Will retry in loop.");
   }
 
   setupBle();
@@ -1028,6 +1182,11 @@ void loop() {
   handlePairButton();
   handlePairingState();
 
+  if (g_isPairingMode) {
+    delay(20);
+    return;
+  }
+
   if (!g_isPaired) {
     if (millis() - g_lastNotPairedLogMs > 5000) {
       Serial.println("[PAIR] Waiting for pairing. Send 'p' to enter pairing mode.");
@@ -1047,12 +1206,23 @@ void loop() {
   if (g_finalizeRequested) {
     g_finalizeRequested = false;
     if (!stopAndFinalizeSession(g_finalizeReason)) {
-      delay(500);
+      Serial.println("[SESSION] finalize retry scheduled");
+      g_finalizeRequested = true;
+      delay(1000);
     }
   }
 
   if (!g_autoStream) {
     delay(20);
+    return;
+  }
+
+  if (!syncPairingStateWithBackend(false)) {
+    delay(200);
+    return;
+  }
+  if (!g_isPaired) {
+    delay(50);
     return;
   }
 

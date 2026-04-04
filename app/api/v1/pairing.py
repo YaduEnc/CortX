@@ -1,5 +1,6 @@
 import secrets
 from datetime import timedelta
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -21,6 +22,7 @@ from app.schemas.pairing import (
 from app.utils.time import utc_now
 
 router = APIRouter(tags=["pairing"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/pairing/start", response_model=PairingStartResponse)
@@ -85,18 +87,53 @@ def pairing_complete(
     device: Device = Depends(get_current_device),
 ) -> PairingCompleteResponse:
     now = utc_now()
+    token_hash = hash_pair_token(payload.pair_token)
 
     session = db.scalar(
         select(PairingSession)
         .where(
             PairingSession.device_id == device.id,
-            PairingSession.pair_token_hash == hash_pair_token(payload.pair_token),
+            PairingSession.pair_token_hash == token_hash,
         )
         .order_by(PairingSession.created_at.desc())
     )
 
     if not session:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid pairing token")
+        other_device_session = db.scalar(
+            select(PairingSession)
+            .where(PairingSession.pair_token_hash == token_hash)
+            .order_by(PairingSession.created_at.desc())
+        )
+        latest_device_session = db.scalar(
+            select(PairingSession)
+            .where(PairingSession.device_id == device.id)
+            .order_by(PairingSession.created_at.desc())
+        )
+
+        reject_reason = "token_not_found_for_device"
+        detail = "Invalid pairing token"
+
+        if other_device_session and other_device_session.device_id != device.id:
+            reject_reason = "token_belongs_to_other_device"
+            detail = "Pairing token belongs to a different device"
+        elif latest_device_session:
+            if latest_device_session.expires_at <= now:
+                reject_reason = "latest_device_pairing_session_expired"
+                detail = "Pairing token expired"
+            elif latest_device_session.status != "pending":
+                reject_reason = f"latest_device_pairing_session_{latest_device_session.status}"
+                detail = f"Pairing session is {latest_device_session.status}"
+            else:
+                reject_reason = "stale_or_nonce_mismatch"
+                detail = "Pairing token does not match current pairing nonce/session"
+
+        logger.warning(
+            "pairing_complete_rejected device_code=%s device_id=%s reason=%s",
+            device.device_code,
+            device.id,
+            reject_reason,
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
     if session.status != "pending":
         if session.status == "completed":

@@ -79,3 +79,12 @@ class DeviceHeartbeatResponse(BaseModel):
     device_id: str
     last_seen_at: datetime
     firmware_version: str | None
+
+
+class DevicePairingStatusResponse(BaseModel):
+    status: str
+    device_id: str
+    device_code: str
+    is_paired: bool
+    paired_at: datetime | None
+    user_id: str | None

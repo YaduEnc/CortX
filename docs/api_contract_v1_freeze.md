@@ -185,6 +185,13 @@ Request:
 ```json
 {"device_code":"manu","secret":"6109994804"}
 ```
+`curl`:
+```bash
+curl -X POST "https://hamza.yaduraj.me/v1/device/register" \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: <ADMIN_BOOTSTRAP_KEY>" \
+  -d '{"device_code":"manu","secret":"6109994804"}'
+```
 Response `201`:
 ```json
 {"id":"<uuid>","device_code":"manu","is_active":true}
@@ -194,6 +201,12 @@ Response `201`:
 Request:
 ```json
 {"device_code":"manu","secret":"6109994804"}
+```
+`curl`:
+```bash
+curl -X POST "https://hamza.yaduraj.me/v1/device/auth" \
+  -H "Content-Type: application/json" \
+  -d '{"device_code":"manu","secret":"6109994804"}'
 ```
 Response `200`:
 ```json
