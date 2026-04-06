@@ -44,16 +44,18 @@ const char* WIFI_SSID     = "Yadu Phone";
 const char* WIFI_PASSWORD = "0000110000";
 
 const char* API_BASE_URL  = "https://hamza.yaduraj.me/v1";
-const char* DEVICE_CODE   = "shasshwat";
-const char* DEVICE_SECRET = "6109994804";
-const char* DEVICE_BLE_NAME = "SecondMind";
+const char* DEVICE_CODE   = "shashwat";
+const char* DEVICE_SECRET = "1234567890";
+const char* DEVICE_BLE_NAME = "Yaduraj";
 
 const int SAMPLE_RATE    = 16000;
 const int CHANNELS       = 1;
 const int BITS           = 16;
-const int TARGET_CHUNK_SECONDS = 10;
+const int TARGET_CHUNK_SECONDS = 4;
 
-const int BACKEND_MAX_CHUNK_BYTES = 256000;
+// Keep chunk payloads comfortably below the backend cap. Large HTTPS writes
+// around 256 KB were tripping HTTPC_ERROR_SEND_PAYLOAD_FAILED on ESP32-S3.
+const int BACKEND_MAX_CHUNK_BYTES = 128000;
 const int PCM_BYTES_PER_SECOND = SAMPLE_RATE * CHANNELS * (BITS / 8);
 const int CHUNK_BYTES = (TARGET_CHUNK_SECONDS * PCM_BYTES_PER_SECOND <= BACKEND_MAX_CHUNK_BYTES)
                         ? (TARGET_CHUNK_SECONDS * PCM_BYTES_PER_SECOND)
@@ -63,10 +65,10 @@ const uint32_t CHUNK_MS = static_cast<uint32_t>((static_cast<uint64_t>(CHUNK_BYT
 
 const bool AUTO_STREAM_DEFAULT = true;
 const bool AUTO_ROLLING_FINALIZE = true;
-const uint32_t AUTO_FINALIZE_AFTER_CHUNKS = 2;  // auto-send one file every ~16s with current chunk size
+const uint32_t AUTO_FINALIZE_AFTER_CHUNKS = 4;  // auto-send one file every ~16s with current chunk size
 const uint32_t PAIR_MODE_WINDOW_MS = 300000;  // 5 min
 const uint32_t PAIR_STATUS_SYNC_INTERVAL_MS = 30000;
-const int PAIR_BUTTON_PIN = -1;               // set GPIO if using hardware button
+#define PAIR_BUTTON_PIN -1               // set GPIO if using hardware button
 const uint32_t LONG_PRESS_MS = 5000;
 
 // XIAO ESP32S3 Sense PDM mic pins
@@ -254,7 +256,7 @@ bool ensureWiFi() {
     delay(500);
     Serial.print('.');
     if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("\n[NET] Connected: " + WiFi.localIP().toString());
+      Serial.printf("\n[NET] Connected: %s (RSSI: %d dBm)\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
       return true;
     }
   }
@@ -356,16 +358,17 @@ bool authDevice() {
   String payload;
   serializeJson(req, payload);
 
-  WiFiClientSecure client;
-  client.setInsecure();
+    WiFiClientSecure client;
+    client.setInsecure();
 
-  HTTPClient http;
-  String url = apiUrl("/device/auth");
-  if (!http.begin(client, url)) {
-    Serial.println("[AUTH] http.begin failed");
-    return false;
-  }
-  http.setTimeout(15000);
+
+    HTTPClient http;
+    String url = apiUrl("/device/auth");
+    if (!http.begin(client, url)) {
+      Serial.println("[AUTH] http.begin failed");
+      return false;
+    }
+    http.setTimeout(30000); // 30s for hotspot stability
   http.addHeader("Content-Type", "application/json");
 
   int code = http.POST(payload);
@@ -404,6 +407,7 @@ bool fetchBackendPairingState(bool& outIsPaired) {
     WiFiClientSecure client;
     client.setInsecure();
 
+
     HTTPClient http;
     String url = apiUrl("/device/pairing/status");
     if (!http.begin(client, url)) {
@@ -411,7 +415,7 @@ bool fetchBackendPairingState(bool& outIsPaired) {
       return false;
     }
 
-    http.setTimeout(15000);
+    http.setTimeout(30000);
     http.addHeader("Authorization", "Bearer " + token);
 
     codeOut = http.GET();
@@ -464,6 +468,12 @@ bool syncPairingStateWithBackend(bool force) {
 
   persistLocalPairingState(backendPaired);
 
+  // If we are currently in pairing mode but backend says we are already paired, exit.
+  if (backendPaired && g_isPairingMode) {
+    Serial.println("[PAIR] Backend reports already paired; auto-exiting pairing mode");
+    exitPairingMode("success");
+  }
+
   if (!backendPaired && !g_activeSessionId.isEmpty()) {
     g_autoStream = false;
     requestFinalize("device_unpaired");
@@ -497,7 +507,7 @@ bool startCaptureSession(String& outSessionId) {
       return false;
     }
 
-    http.setTimeout(15000);
+    http.setTimeout(30000); // 30s timeout for session starts
     http.addHeader("Authorization", "Bearer " + token);
     http.addHeader("Content-Type", "application/json");
 
@@ -509,10 +519,32 @@ bool startCaptureSession(String& outSessionId) {
 
   int code = 0;
   String resp;
-  if (!doStart(g_deviceJwt, resp, code)) return false;
-  if (code == 401) {
-    if (!authDevice()) return false;
-    if (!doStart(g_deviceJwt, resp, code)) return false;
+  
+  // Retry loop for the first session start to handle WiFi handshake jitter
+  for (int retry = 0; retry < 3; retry++) {
+    if (!doStart(g_deviceJwt, resp, code)) {
+      if (retry < 2) {
+        Serial.printf("[SESSION] start attempt %d failed; breathing...\n", retry + 1);
+        delay(1500); 
+        continue;
+      }
+      return false;
+    }
+    
+    if (code == 401) {
+      if (!authDevice()) return false;
+      if (!doStart(g_deviceJwt, resp, code)) return false;
+    }
+    
+    if (code == -1) {
+       Serial.println("[SESSION] HTTP -1 detected; forcing network reset...");
+       WiFi.disconnect();
+       delay(2000);
+       ensureWiFi();
+       delay(1000);
+       continue;
+    }
+    break;
   }
 
   Serial.printf("[SESSION] start HTTP %d\n", code);
@@ -544,6 +576,8 @@ bool uploadCaptureChunkHttp(const ChunkUploadJob& job) {
   auto doUpload = [&](const String& token, String& respOut, int& codeOut) -> bool {
     WiFiClientSecure client;
     client.setInsecure();
+    client.setTimeout(30000);
+
 
     HTTPClient http;
     String url = apiUrl("/device/capture/chunks");
@@ -553,6 +587,8 @@ bool uploadCaptureChunkHttp(const ChunkUploadJob& job) {
     }
 
     http.setTimeout(30000);
+    http.setReuse(false);
+    http.useHTTP10(true);
     http.addHeader("Authorization", "Bearer " + token);
     http.addHeader("Content-Type", "application/octet-stream");
     http.addHeader("X-Session-Id", String(job.sessionId));
@@ -564,6 +600,12 @@ bool uploadCaptureChunkHttp(const ChunkUploadJob& job) {
     http.addHeader("X-Codec", "pcm16le");
 
     codeOut = http.POST(job.buffer, static_cast<int>(job.byteSize));
+    if (codeOut < 0) {
+      Serial.printf("[CHUNK] transport error idx=%lu code=%d detail=%s\n",
+                    static_cast<unsigned long>(job.chunkIndex),
+                    codeOut,
+                    HTTPClient::errorToString(codeOut).c_str());
+    }
     respOut = http.getString();
     http.end();
     return true;
@@ -575,6 +617,17 @@ bool uploadCaptureChunkHttp(const ChunkUploadJob& job) {
   if (code == 401) {
     if (!authDevice()) return false;
     if (!doUpload(g_deviceJwt, resp, code)) return false;
+  }
+
+  if (code < 0) {
+    Serial.printf("[CHUNK] upload failed idx=%lu HTTP %d: %s\n",
+                  static_cast<unsigned long>(job.chunkIndex),
+                  code,
+                  HTTPClient::errorToString(code).c_str());
+    WiFi.disconnect();
+    delay(1000);
+    ensureWiFi();
+    return false;
   }
 
   if (code == 413) {
@@ -613,6 +666,7 @@ bool finalizeCaptureSessionHttp(const String& sessionId, const String& reason) {
 
     WiFiClientSecure client;
     client.setInsecure();
+
     HTTPClient http;
     String url = apiUrl("/device/capture/sessions/" + sessionId + "/finalize");
     if (!http.begin(client, url)) {
@@ -737,6 +791,7 @@ bool completePairingWithBackend(const String& pairToken) {
     WiFiClientSecure client;
     client.setInsecure();
 
+
     HTTPClient http;
     String url = apiUrl("/device/pairing/complete");
     if (!http.begin(client, url)) {
@@ -744,7 +799,7 @@ bool completePairingWithBackend(const String& pairToken) {
       return false;
     }
 
-    http.setTimeout(20000);
+    http.setTimeout(30000);
     http.addHeader("Authorization", "Bearer " + token);
     http.addHeader("Content-Type", "application/json");
 
@@ -976,6 +1031,7 @@ bool runContinuousChunkOnce() {
   // Start backend capture session only when first chunk is actually ready,
   // so aborted first-chunk attempts do not leave empty sessions server-side.
   if (g_activeSessionId.isEmpty()) {
+    delay(200); // small grace period
     String sid;
     if (!startCaptureSession(sid)) {
       xSemaphoreGive(sem);

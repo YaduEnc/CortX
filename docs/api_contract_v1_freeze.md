@@ -183,34 +183,87 @@ Response `200`:
 ### `POST /v1/device/register` (admin bootstrap)
 Request:
 ```json
-{"device_code":"manu","secret":"6109994804"}
+{"device_code":"shashwat","secret":"1234567890"}
 ```
-`curl`:
+Exact operator `curl` for the current device:
 ```bash
 curl -X POST "https://hamza.yaduraj.me/v1/device/register" \
   -H "Content-Type: application/json" \
-  -H "X-Admin-Key: <ADMIN_BOOTSTRAP_KEY>" \
-  -d '{"device_code":"manu","secret":"6109994804"}'
+  -H "X-Admin-Key: hamza2026" \
+  -d '{"device_code":"shashwat","secret":"1234567890"}'
 ```
+Firmware constants to keep in sync with registration:
+```cpp
+const char* DEVICE_CODE = "shashwat";
+const char* DEVICE_SECRET = "1234567890";
+const char* DEVICE_BLE_NAME = "Yaduraj";
+```
+Note:
+- `DEVICE_BLE_NAME` is firmware-only and is not sent to `/v1/device/register`.
+- When adding a new device, usually only `DEVICE_CODE` and `DEVICE_SECRET` need matching backend registration.
 Response `201`:
 ```json
-{"id":"<uuid>","device_code":"manu","is_active":true}
+{"id":"<uuid>","device_code":"shashwat","is_active":true}
 ```
 
 ### `POST /v1/device/auth`
 Request:
 ```json
-{"device_code":"manu","secret":"6109994804"}
+{"device_code":"shashwat","secret":"1234567890"}
 ```
-`curl`:
+Exact operator `curl` for the current device:
 ```bash
 curl -X POST "https://hamza.yaduraj.me/v1/device/auth" \
   -H "Content-Type: application/json" \
-  -d '{"device_code":"manu","secret":"6109994804"}'
+  -d '{"device_code":"shashwat","secret":"1234567890"}'
 ```
 Response `200`:
 ```json
 {"access_token":"<device_jwt>","token_type":"bearer","expires_in_minutes":1440}
+```
+
+## Operator Commands
+
+### Full database wipe
+This removes all users, devices, pairings, captures, transcripts, AI items, and derived graph data from PostgreSQL.
+
+```bash
+docker compose exec -T postgres psql -U secondmind -d secondmind <<'SQL'
+TRUNCATE TABLE
+  entity_mentions,
+  entities,
+  ai_items,
+  ai_extractions,
+  transcript_segments,
+  transcripts,
+  audio_chunks,
+  capture_sessions,
+  pairing_sessions,
+  device_user_bindings,
+  app_password_reset_tokens,
+  app_user_preferences,
+  app_users,
+  devices
+RESTART IDENTITY CASCADE;
+SQL
+```
+
+### Capture-only wipe
+This keeps users and devices, but deletes audio, transcripts, AI extraction rows, and idea graph rows created from captures.
+
+```bash
+docker compose exec -T postgres psql -U secondmind -d secondmind <<'SQL'
+TRUNCATE TABLE
+  entity_mentions,
+  entities,
+  ai_items,
+  ai_extractions,
+  transcript_segments,
+  transcripts,
+  audio_chunks,
+  capture_sessions
+RESTART IDENTITY CASCADE;
+SQL
 ```
 
 ### `POST /v1/device/heartbeat`
