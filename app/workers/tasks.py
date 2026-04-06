@@ -15,6 +15,7 @@ from app.models.transcript import Transcript, TranscriptSegment
 from app.services.assistant_llm import AssistantLLMError, extract_assistant_payload
 from app.services.assistant_pipeline import AssistantPipelineError, prepare_extraction_record
 from app.services.entity_extraction import EntityExtractionError, extract_entities_from_transcript, persist_entities
+from app.services.founder_intelligence import FounderIntelligenceError, process_founder_intelligence
 from app.services.transcriber import get_transcriber
 from app.utils.time import utc_now
 
@@ -236,6 +237,11 @@ def process_session_ai_extraction(self, session_id: str) -> dict:
                 entity_exc,
             )
 
+        try:
+            self.app.send_task("app.workers.tasks.process_session_founder_intelligence", args=[session_id], queue="ai")
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to queue founder intelligence for session=%s", session_id)
+
         return {"status": "ok", "session_id": session_id, "extraction_id": extraction.id}
 
     except Retry:
@@ -277,6 +283,37 @@ def process_session_ai_extraction(self, session_id: str) -> dict:
             logger.exception("AI extraction failed session=%s", session_id)
         return {"status": "error", "reason": str(exc)}
 
+    finally:
+        db.close()
+
+
+@shared_task(bind=True, name="app.workers.tasks.process_session_founder_intelligence")
+def process_session_founder_intelligence_task(self, session_id: str) -> dict:
+    db = SessionLocal()
+    started = time.perf_counter()
+    try:
+        result = process_founder_intelligence(db, session_id)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        logger.info(
+            "Founder intelligence completed session=%s idea_id=%s signals=%s actions=%s elapsed_ms=%s",
+            session_id,
+            result.get("idea_id"),
+            result.get("signal_count"),
+            result.get("action_count"),
+            elapsed_ms,
+        )
+        return {"status": "ok", "session_id": session_id, **result}
+    except FounderIntelligenceError as exc:
+        db.rollback()
+        logger.warning("Founder intelligence skipped session=%s reason=%s", session_id, exc)
+        return {"status": "skipped", "reason": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.exception("Founder intelligence failed session=%s", session_id)
+        if self.request.retries < 3:
+            countdown = min(300, 30 * (2 ** self.request.retries))
+            raise self.retry(exc=exc, countdown=countdown)
+        return {"status": "error", "reason": str(exc)}
     finally:
         db.close()
 

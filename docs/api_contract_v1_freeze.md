@@ -563,6 +563,157 @@ Implementation notes:
 - `shared_session_ids` provide traceability back to memories
 - mention rows should be used by the app to render the entity timeline / inspector panel
 
+## Founder Memory Engine
+
+Notes:
+- this is user-scoped founder/startup intelligence built from transcripts over time
+- ideas are persisted across sessions as `founder_idea_clusters`
+- each linked memory is tracked in `founder_idea_memories`
+- signals are separate evidence rows in `founder_signals`
+- weekly summaries are stored in `weekly_founder_memos`
+
+### `GET /v1/app/founder/ideas?status=emerging|active|validating|paused|dropped&limit=50`
+Response `200`:
+```json
+{
+  "ideas": [
+    {
+      "idea_id":"<uuid>",
+      "title":"Founder memory OS for startup teams",
+      "summary":"A persistent memory layer that turns founder conversations into action.",
+      "problem_statement":"Founders repeat product insights but lose them across days.",
+      "proposed_solution":"Capture voice, extract memory, cluster ideas, and suggest next moves.",
+      "target_user":"early-stage startup founders",
+      "status":"active",
+      "confidence":0.91,
+      "novelty_score":0.74,
+      "conviction_score":0.88,
+      "mention_count":6,
+      "first_seen_at":"2026-04-07T08:00:00Z",
+      "last_seen_at":"2026-04-07T10:00:00Z",
+      "created_at":"2026-04-07T08:00:00Z",
+      "updated_at":"2026-04-07T10:00:00Z"
+    }
+  ],
+  "total":1
+}
+```
+
+### `GET /v1/app/founder/ideas/{idea_id}`
+Response `200`:
+```json
+{
+  "idea_id":"<uuid>",
+  "title":"Founder memory OS for startup teams",
+  "summary":"A persistent memory layer that turns founder conversations into action.",
+  "problem_statement":"Founders repeat product insights but lose them across days.",
+  "proposed_solution":"Capture voice, extract memory, cluster ideas, and suggest next moves.",
+  "target_user":"early-stage startup founders",
+  "status":"active",
+  "confidence":0.91,
+  "novelty_score":0.74,
+  "conviction_score":0.88,
+  "mention_count":6,
+  "first_seen_at":"2026-04-07T08:00:00Z",
+  "last_seen_at":"2026-04-07T10:00:00Z",
+  "created_at":"2026-04-07T08:00:00Z",
+  "updated_at":"2026-04-07T10:00:00Z",
+  "memories":[
+    {
+      "memory_id":"<uuid>",
+      "session_id":"<session_uuid>",
+      "transcript_id":"<transcript_uuid>",
+      "relevance_score":0.94,
+      "role":"origin",
+      "created_at":"2026-04-07T08:00:00Z"
+    }
+  ],
+  "actions":[
+    {
+      "action_id":"<uuid>",
+      "idea_cluster_id":"<uuid>",
+      "title":"Interview 5 founders about memory loss",
+      "details":"Validate whether repeated lost context is painful enough to pay for.",
+      "status":"open",
+      "priority":1,
+      "due_at":null,
+      "source":"founder_ai",
+      "created_at":"2026-04-07T08:01:00Z",
+      "updated_at":"2026-04-07T08:01:00Z",
+      "completed_at":null
+    }
+  ],
+  "linked_signal_count":2
+}
+```
+
+### `GET /v1/app/founder/signals?signal_type=opportunity|pain_point|obsession|contradiction|market_signal&limit=60`
+Response `200`:
+```json
+{
+  "signals":[
+    {
+      "signal_id":"<uuid>",
+      "signal_type":"opportunity",
+      "title":"Repeated founder pain around lost context",
+      "summary":"The user keeps returning to startup memory loss as a product opportunity.",
+      "strength":0.89,
+      "session_id":"<session_uuid>",
+      "transcript_id":"<transcript_uuid>",
+      "idea_cluster_id":"<idea_uuid>",
+      "created_at":"2026-04-07T10:00:00Z"
+    }
+  ],
+  "total":1
+}
+```
+
+### `GET /v1/app/founder/weekly-memo?week_start=YYYY-MM-DD&tz=Asia/Kolkata`
+Response `200`:
+```json
+{
+  "memo_id":"<uuid>",
+  "week_start":"2026-04-06",
+  "headline":"Founder memory OS is becoming the dominant product thread this week.",
+  "memo_text":"You repeatedly returned to founder memory capture, startup execution drift, and actionability.",
+  "top_ideas":[
+    {
+      "idea_id":"<uuid>",
+      "title":"Founder memory OS for startup teams",
+      "status":"active",
+      "confidence":0.91,
+      "conviction_score":0.88
+    }
+  ],
+  "top_risks":["Execution is broad; the wedge still needs sharper validation."],
+  "top_actions":["Interview 5 founders about repeated context loss."],
+  "created_at":"2026-04-07T10:00:00Z",
+  "updated_at":"2026-04-07T10:00:00Z"
+}
+```
+
+### `PATCH /v1/app/founder/actions/{action_id}`
+Request:
+```json
+{"status":"done","priority":1}
+```
+Response `200`:
+```json
+{
+  "action_id":"<uuid>",
+  "idea_cluster_id":"<uuid>",
+  "title":"Interview 5 founders about memory loss",
+  "details":"Validate whether repeated lost context is painful enough to pay for.",
+  "status":"done",
+  "priority":1,
+  "due_at":null,
+  "source":"founder_ai",
+  "created_at":"2026-04-07T08:01:00Z",
+  "updated_at":"2026-04-07T10:10:00Z",
+  "completed_at":"2026-04-07T10:10:00Z"
+}
+```
+
 ## Deprecated / Legacy
 
 ### `POST /v1/app/live/start`

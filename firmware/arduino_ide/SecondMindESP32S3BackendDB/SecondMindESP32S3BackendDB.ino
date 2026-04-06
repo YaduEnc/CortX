@@ -63,8 +63,8 @@ const int CHUNK_BYTES = (TARGET_CHUNK_SECONDS * PCM_BYTES_PER_SECOND <= BACKEND_
 const int CHUNK_SECONDS = CHUNK_BYTES / PCM_BYTES_PER_SECOND;
 const uint32_t CHUNK_MS = static_cast<uint32_t>((static_cast<uint64_t>(CHUNK_BYTES) * 1000ULL) / PCM_BYTES_PER_SECOND);
 
-const bool AUTO_STREAM_DEFAULT = true;
-const bool AUTO_ROLLING_FINALIZE = true;
+const bool AUTO_STREAM_DEFAULT = false;
+const bool AUTO_ROLLING_FINALIZE = false;
 const uint32_t AUTO_FINALIZE_AFTER_CHUNKS = 4;  // auto-send one file every ~16s with current chunk size
 const uint32_t PAIR_MODE_WINDOW_MS = 300000;  // 5 min
 const uint32_t PAIR_STATUS_SYNC_INTERVAL_MS = 30000;
@@ -1081,24 +1081,41 @@ bool runContinuousChunkOnce() {
 // ---------------------------------------------------------------------
 void printSerialHelp() {
   Serial.println("\n=== ESP32 BackendDB Commands ===");
-  if (AUTO_ROLLING_FINALIZE) {
-    Serial.printf("auto: finalize every %lu chunks (~%lu sec)\n",
-                  static_cast<unsigned long>(AUTO_FINALIZE_AFTER_CHUNKS),
-                  static_cast<unsigned long>((AUTO_FINALIZE_AFTER_CHUNKS * CHUNK_MS) / 1000));
-  }
-  Serial.println("p/P : enter pairing mode");
-  Serial.println("x   : clear paired flag + enter pairing mode");
+  Serial.println("s   : START continuous recording (new session)");
+  Serial.println("p   : STOP/FINALIZE recording session");
+  Serial.println("b/B : enter BLE pairing mode");
+  Serial.println("x   : reset pairing + enter pairing mode");
   Serial.println("u   : re-auth device token");
-  Serial.println("a   : toggle continuous chunk stream on/off");
-  Serial.println("s   : stop stream + finalize active session");
-  Serial.println("r   : record and queue one chunk now");
+  Serial.println("r   : record and queue one chunk manually");
   Serial.println("h   : show this help");
-  Serial.println("================================\n");
+  Serial.println("================================");
+  Serial.println("Current status: " + String(g_autoStream ? "RECORDING ON" : "STOPPED"));
+  Serial.println("");
 }
 
 void processSerialCommand(char cmd, bool allowImmediateRun) {
   switch (cmd) {
+    case 's':
+      if (g_autoStream) {
+        Serial.println("[REC] Already recording.");
+      } else if (!g_isPaired) {
+        Serial.println("[PAIR] Cannot start recording: Device not paired. Use 'b'.");
+      } else {
+        Serial.println("[REC] STARTING continuous recording...");
+        g_autoStream = true;
+        syncPairingStateWithBackend(true); 
+      }
+      break;
     case 'p':
+      if (!g_autoStream) {
+        Serial.println("[REC] Not currently recording.");
+      } else {
+        Serial.println("[REC] STOPPING and finalizing session...");
+        g_autoStream = false;
+        requestFinalize("device_stop");
+      }
+      break;
+    case 'b':
       enterPairingMode();
       break;
     case 'x':
@@ -1109,29 +1126,11 @@ void processSerialCommand(char cmd, bool allowImmediateRun) {
     case 'u':
       authDevice();
       break;
-    case 'a':
-      g_autoStream = !g_autoStream;
-      if (g_autoStream && !syncPairingStateWithBackend(true)) {
-        Serial.println("[PAIR] Cannot enable stream until pairing status is verified");
-        g_autoStream = false;
-      }
-      if (g_autoStream && !g_isPaired) {
-        Serial.println("[PAIR] Device is not paired; stream remains OFF");
-        g_autoStream = false;
-      }
-      Serial.printf("[REC] Continuous chunk stream %s\n", g_autoStream ? "ON" : "OFF");
-      if (!g_autoStream) requestFinalize("device_stop");
-      break;
-    case 's':
-      g_autoStream = false;
-      requestFinalize("device_stop");
-      Serial.println("[REC] Stop requested; will finalize session");
-      break;
     case 'r':
       if (!allowImmediateRun) {
         Serial.println("[REC] Ignored 'r' while chunk loop is active");
       } else if (!g_isPaired) {
-        Serial.println("[REC] Device not paired. Pair first with 'p'.");
+        Serial.println("[REC] Device not paired. Use 'b' to pair.");
       } else {
         runContinuousChunkOnce();
       }
@@ -1223,7 +1222,7 @@ void setup() {
     Serial.println("[PAIR] Device already paired.");
     setPairStatus("idle");
   } else {
-    Serial.println("[PAIR] Device not paired. Send 'p' in Serial Monitor.");
+    Serial.println("[PAIR] Device not paired. Send 'b' in Serial Monitor.");
   }
 
   printSerialHelp();
@@ -1245,7 +1244,7 @@ void loop() {
 
   if (!g_isPaired) {
     if (millis() - g_lastNotPairedLogMs > 5000) {
-      Serial.println("[PAIR] Waiting for pairing. Send 'p' to enter pairing mode.");
+      Serial.println("[PAIR] Waiting for pairing. Send 'b' to enter pairing mode.");
       g_lastNotPairedLogMs = millis();
     }
     delay(20);

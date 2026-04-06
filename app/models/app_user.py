@@ -22,3 +22,5 @@ class AppUser(Base):
     password_reset_tokens = relationship("AppPasswordResetToken", back_populates="user", cascade="all, delete-orphan")
     ai_extractions = relationship("AIExtraction", back_populates="user", cascade="all, delete-orphan")
     preferences = relationship("AppUserPreferences", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    founder_ideas = relationship("FounderIdeaCluster", back_populates="user", cascade="all, delete-orphan")
+    weekly_founder_memos = relationship("WeeklyFounderMemo", back_populates="user", cascade="all, delete-orphan")

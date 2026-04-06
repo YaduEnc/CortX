@@ -15,6 +15,7 @@ from app.models.assistant import AIExtraction, AIItem, AIItemStatus
 from app.models.capture import CaptureSession, SessionStatus
 from app.models.app_user import AppUser
 from app.models.device import Device
+from app.models.founder import FounderIdeaAction, FounderIdeaActionStatus, FounderIdeaCluster, FounderIdeaMemory, FounderSignal, WeeklyFounderMemo
 from app.models.pairing import DeviceUserBinding, PairingSession
 from app.models.password_reset import AppPasswordResetToken
 from app.models.user_preferences import AppUserPreferences
@@ -58,6 +59,16 @@ from app.schemas.entity import (
     EntityMentionResponse,
     EntityResponse,
     IdeaGraphResponse,
+)
+from app.schemas.founder import (
+    FounderIdeaActionResponse,
+    FounderIdeaActionUpdateRequest,
+    FounderIdeaClusterResponse,
+    FounderIdeaDetailResponse,
+    FounderSignalResponse,
+    FounderSignalsListResponse,
+    FounderWeeklyMemoResponse,
+    FounderIdeasListResponse,
 )
 from app.models.entity import Entity, EntityMention
 from app.utils.time import utc_now
@@ -193,6 +204,56 @@ def _map_ai_extraction(extraction: AIExtraction) -> AppCaptureAIExtractionRespon
         started_at=extraction.started_at,
         completed_at=extraction.completed_at,
         updated_at=extraction.updated_at,
+    )
+
+
+def _map_founder_action(action: FounderIdeaAction) -> FounderIdeaActionResponse:
+    return FounderIdeaActionResponse(
+        action_id=action.id,
+        idea_cluster_id=action.idea_cluster_id,
+        title=action.title,
+        details=action.details,
+        status=action.status,
+        priority=action.priority,
+        due_at=action.due_at,
+        source=action.source,
+        created_at=action.created_at,
+        updated_at=action.updated_at,
+        completed_at=action.completed_at,
+    )
+
+
+def _map_founder_idea(idea: FounderIdeaCluster) -> FounderIdeaClusterResponse:
+    return FounderIdeaClusterResponse(
+        idea_id=idea.id,
+        title=idea.title,
+        summary=idea.summary,
+        problem_statement=idea.problem_statement,
+        proposed_solution=idea.proposed_solution,
+        target_user=idea.target_user,
+        status=idea.status,
+        confidence=idea.confidence,
+        novelty_score=idea.novelty_score,
+        conviction_score=idea.conviction_score,
+        mention_count=idea.mention_count,
+        first_seen_at=idea.first_seen_at,
+        last_seen_at=idea.last_seen_at,
+        created_at=idea.created_at,
+        updated_at=idea.updated_at,
+    )
+
+
+def _map_founder_signal(signal: FounderSignal) -> FounderSignalResponse:
+    return FounderSignalResponse(
+        signal_id=signal.id,
+        signal_type=signal.signal_type,
+        title=signal.title,
+        summary=signal.summary,
+        strength=signal.strength,
+        session_id=signal.session_id,
+        transcript_id=signal.transcript_id,
+        idea_cluster_id=signal.idea_cluster_id,
+        created_at=signal.created_at,
     )
 
 
@@ -1081,6 +1142,208 @@ def reprocess_capture_ai(
         status=extraction.status,
         queued=queued,
     )
+
+
+# ─────────────────────────────────────────────────────
+# FOUNDER INTELLIGENCE ENDPOINTS
+# ─────────────────────────────────────────────────────
+
+
+@router.get("/founder/ideas", response_model=FounderIdeasListResponse)
+def list_founder_ideas(
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> FounderIdeasListResponse:
+    capped_limit = max(1, min(limit, 200))
+    query = select(FounderIdeaCluster).where(FounderIdeaCluster.user_id == user.id)
+    if status_filter:
+        normalized = status_filter.strip().lower()
+        allowed = {"emerging", "active", "validating", "paused", "dropped"}
+        if normalized not in allowed:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid founder idea status")
+        query = query.where(FounderIdeaCluster.status == normalized)
+
+    ideas = db.scalars(
+        query.order_by(
+            FounderIdeaCluster.last_seen_at.desc(),
+            FounderIdeaCluster.conviction_score.desc().nullslast(),
+            FounderIdeaCluster.created_at.desc(),
+        ).limit(capped_limit)
+    ).all()
+    return FounderIdeasListResponse(ideas=[_map_founder_idea(idea) for idea in ideas], total=len(ideas))
+
+
+@router.get("/founder/ideas/{idea_id}", response_model=FounderIdeaDetailResponse)
+def get_founder_idea_detail(
+    idea_id: str,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> FounderIdeaDetailResponse:
+    idea = db.scalar(
+        select(FounderIdeaCluster).where(FounderIdeaCluster.id == idea_id, FounderIdeaCluster.user_id == user.id)
+    )
+    if not idea:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Founder idea not found")
+
+    memories = db.scalars(
+        select(FounderIdeaMemory)
+        .where(FounderIdeaMemory.idea_cluster_id == idea.id)
+        .order_by(FounderIdeaMemory.created_at.desc())
+        .limit(24)
+    ).all()
+    actions = db.scalars(
+        select(FounderIdeaAction)
+        .where(FounderIdeaAction.idea_cluster_id == idea.id)
+        .order_by(
+            FounderIdeaAction.status.asc(),
+            FounderIdeaAction.due_at.asc().nullslast(),
+            FounderIdeaAction.created_at.desc(),
+        )
+        .limit(24)
+    ).all()
+    linked_signal_count = int(
+        db.scalar(select(func.count(FounderSignal.id)).where(FounderSignal.idea_cluster_id == idea.id)) or 0
+    )
+    return FounderIdeaDetailResponse(
+        **_map_founder_idea(idea).model_dump(),
+        memories=[
+            {
+                "memory_id": row.id,
+                "session_id": row.session_id,
+                "transcript_id": row.transcript_id,
+                "relevance_score": row.relevance_score,
+                "role": row.role,
+                "created_at": row.created_at,
+            }
+            for row in memories
+        ],
+        actions=[_map_founder_action(action) for action in actions],
+        linked_signal_count=linked_signal_count,
+    )
+
+
+@router.get("/founder/signals", response_model=FounderSignalsListResponse)
+def list_founder_signals(
+    signal_type: str | None = None,
+    limit: int = 60,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> FounderSignalsListResponse:
+    capped_limit = max(1, min(limit, 200))
+    query = select(FounderSignal).where(FounderSignal.user_id == user.id)
+    if signal_type:
+        normalized = signal_type.strip().lower()
+        allowed = {"pain_point", "obsession", "contradiction", "opportunity", "market_signal"}
+        if normalized not in allowed:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid founder signal type")
+        query = query.where(FounderSignal.signal_type == normalized)
+
+    signals = db.scalars(
+        query.order_by(
+            FounderSignal.created_at.desc(),
+            FounderSignal.strength.desc().nullslast(),
+        ).limit(capped_limit)
+    ).all()
+    return FounderSignalsListResponse(signals=[_map_founder_signal(row) for row in signals], total=len(signals))
+
+
+@router.get("/founder/weekly-memo", response_model=FounderWeeklyMemoResponse)
+def get_founder_weekly_memo(
+    week_start: str | None = None,
+    tz: str | None = None,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> FounderWeeklyMemoResponse:
+    prefs = _get_or_create_preferences(db, user.id)
+    tzinfo, _ = _resolve_timezone(tz or prefs.timezone)
+    if week_start:
+        try:
+            target_week = date.fromisoformat(week_start)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="week_start must be YYYY-MM-DD") from exc
+    else:
+        today_local = utc_now().astimezone(tzinfo)
+        target_week = today_local.date() - timedelta(days=today_local.weekday())
+
+    memo = db.scalar(
+        select(WeeklyFounderMemo).where(
+            WeeklyFounderMemo.user_id == user.id,
+            WeeklyFounderMemo.week_start == target_week,
+        )
+    )
+    if memo:
+        return FounderWeeklyMemoResponse(
+            memo_id=memo.id,
+            week_start=memo.week_start,
+            headline=memo.headline or "Founder weekly memo",
+            memo_text=memo.memo_text or "No memo text generated yet.",
+            top_ideas=memo.top_ideas_json or [],
+            top_risks=memo.top_risks_json or [],
+            top_actions=memo.top_actions_json or [],
+            created_at=memo.created_at,
+            updated_at=memo.updated_at,
+        )
+
+    top_ideas = db.scalars(
+        select(FounderIdeaCluster)
+        .where(FounderIdeaCluster.user_id == user.id)
+        .order_by(FounderIdeaCluster.last_seen_at.desc(), FounderIdeaCluster.conviction_score.desc().nullslast())
+        .limit(3)
+    ).all()
+    top_signals = db.scalars(
+        select(FounderSignal)
+        .where(FounderSignal.user_id == user.id)
+        .order_by(FounderSignal.created_at.desc(), FounderSignal.strength.desc().nullslast())
+        .limit(5)
+    ).all()
+    return FounderWeeklyMemoResponse(
+        memo_id=None,
+        week_start=target_week,
+        headline="Founder weekly memo",
+        memo_text="Founder intelligence is collecting enough signal to generate a weekly memo. Keep capturing product thoughts and startup discussions.",
+        top_ideas=[
+            {
+                "idea_id": idea.id,
+                "title": idea.title,
+                "status": idea.status,
+                "confidence": idea.confidence,
+            }
+            for idea in top_ideas
+        ],
+        top_risks=[signal.title for signal in top_signals if signal.signal_type == "contradiction"][:5],
+        top_actions=[],
+    )
+
+
+@router.patch("/founder/actions/{action_id}", response_model=FounderIdeaActionResponse)
+def update_founder_action(
+    action_id: str,
+    payload: FounderIdeaActionUpdateRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> FounderIdeaActionResponse:
+    action = db.scalar(
+        select(FounderIdeaAction).where(
+            FounderIdeaAction.id == action_id,
+            FounderIdeaAction.user_id == user.id,
+        )
+    )
+    if not action:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Founder action not found")
+
+    if payload.priority is not None:
+        action.priority = payload.priority
+    if payload.due_at is not None:
+        action.due_at = payload.due_at
+    if payload.status is not None:
+        action.status = payload.status
+        action.completed_at = utc_now() if payload.status == FounderIdeaActionStatus.done.value else None
+
+    db.commit()
+    db.refresh(action)
+    return _map_founder_action(action)
 
 
 # ─────────────────────────────────────────────────────
