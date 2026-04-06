@@ -1,7 +1,7 @@
 # CortX API Contract (v1, Current)
 
 Version: `v1`  
-Updated: `2026-04-03`  
+Updated: `2026-04-07`  
 Base URL: `https://<domain>/v1` (local: `http://localhost:8000/v1`)
 
 Auth:
@@ -468,6 +468,100 @@ Request examples:
 ```json
 {"due_at":"2026-04-04T10:30:00Z","timezone":"Asia/Kolkata"}
 ```
+
+## App Mind Map / Idea Graph
+
+Notes:
+- graph is user-scoped
+- nodes come from `entities`
+- mention evidence comes from `entity_mentions`
+- edges are built dynamically from entity co-occurrence in the same capture session
+- supported entity types: `person`, `project`, `topic`, `place`, `organization`
+
+### `GET /v1/app/idea-graph?entity_type=person|project|topic|place|organization&min_mentions=1&limit=100`
+Response `200`:
+```json
+{
+  "nodes":[
+    {
+      "entity_id":"<uuid>",
+      "entity_type":"person",
+      "name":"PM Modi",
+      "mention_count":3,
+      "first_seen_at":"2026-04-07T06:10:00Z",
+      "last_seen_at":"2026-04-07T08:20:00Z"
+    }
+  ],
+  "edges":[
+    {
+      "source_entity_id":"<uuid>",
+      "source_name":"PM Modi",
+      "source_type":"person",
+      "target_entity_id":"<uuid>",
+      "target_name":"Iran",
+      "target_type":"place",
+      "shared_session_count":2,
+      "shared_session_ids":["<session_uuid_1>","<session_uuid_2>"]
+    }
+  ],
+  "total_entities":8,
+  "total_connections":13
+}
+```
+
+Exact example `curl`:
+```bash
+curl "https://hamza.yaduraj.me/v1/app/idea-graph?entity_type=person&min_mentions=1&limit=100" \
+  -H "Authorization: Bearer <app_jwt>"
+```
+
+### `GET /v1/app/idea-graph/entities/{entity_id}`
+Response `200`:
+```json
+{
+  "entity_id":"<uuid>",
+  "entity_type":"person",
+  "name":"PM Modi",
+  "mention_count":3,
+  "first_seen_at":"2026-04-07T06:10:00Z",
+  "last_seen_at":"2026-04-07T08:20:00Z"
+}
+```
+
+Exact example `curl`:
+```bash
+curl "https://hamza.yaduraj.me/v1/app/idea-graph/entities/<entity_id>" \
+  -H "Authorization: Bearer <app_jwt>"
+```
+
+### `GET /v1/app/idea-graph/entities/{entity_id}/mentions?limit=50`
+Response `200`:
+```json
+[
+  {
+    "mention_id":"<uuid>",
+    "entity_id":"<uuid>",
+    "entity_name":"PM Modi",
+    "entity_type":"person",
+    "session_id":"<session_uuid>",
+    "context_snippet":"Meet with PM Modi tomorrow at 2:30 PM.",
+    "confidence":0.96,
+    "created_at":"2026-04-07T08:22:00Z"
+  }
+]
+```
+
+Exact example `curl`:
+```bash
+curl "https://hamza.yaduraj.me/v1/app/idea-graph/entities/<entity_id>/mentions?limit=20" \
+  -H "Authorization: Bearer <app_jwt>"
+```
+
+Implementation notes:
+- `mention_count` is the node importance signal
+- `shared_session_count` is the edge strength
+- `shared_session_ids` provide traceability back to memories
+- mention rows should be used by the app to render the entity timeline / inspector panel
 
 ## Deprecated / Legacy
 

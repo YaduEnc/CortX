@@ -42,7 +42,26 @@ CortX is a full-stack voice memory system:
   - task/reminder items
 - Manual reprocess endpoint for any capture.
 
-### 5) iOS App UX
+### 5) Mind Map / Idea Graph
+- Runs after AI extraction on the same completed transcript.
+- LM Studio entity extraction produces normalized entities across:
+  - people
+  - projects
+  - topics
+  - places
+  - organizations
+- Backend persists:
+  - `entities` as reusable user-scoped nodes
+  - `entity_mentions` as per-session evidence rows
+- App/API graph edges are built from co-occurrence:
+  - if two entities appear in the same memory/session, they are linked
+  - edge strength is `shared_session_count`
+- App can load:
+  - graph overview
+  - single entity detail
+  - mention timeline for the selected entity
+
+### 6) iOS App UX
 - Auth, forgot/reset password, account deletion.
 - Device list + pairing UI.
 - Memory Dashboard:
@@ -56,7 +75,7 @@ CortX is a full-stack voice memory system:
   - task and reminder actions
   - calendar event creation via EventKit
 
-### 6) Daily Summary + Profile + Device Management
+### 7) Daily Summary + Profile + Device Management
 - Dashboard "Today Snapshot" card with:
   - deterministic daily headline
   - key metrics (memories, due actions/reminders, upcoming)
@@ -87,7 +106,9 @@ flowchart LR
   D -->|"enqueue AI extraction"| E["Celery ai queue"]
   E -->|"LM Studio /v1/chat/completions"| F["LM Studio"]
   E -->|"ai_extractions + ai_items"| C
+  E -->|"entity extraction + persist entities/entity_mentions"| C
   G["iOS App"] -->|"/v1/app/captures + /audio + /transcript + /ai"| B
+  G -->|"/v1/app/idea-graph + entity detail + mentions"| B
   G -->|"PATCH /v1/app/assistant/items"| B
   G -->|"EventKit"| H["Apple Calendar"]
 ```
@@ -226,6 +247,11 @@ curl http://localhost:8000/v1/health/ai-metrics
 - `GET /v1/app/assistant/items`
 - `PATCH /v1/app/assistant/items/{item_id}`
 
+### App Mind Map
+- `GET /v1/app/idea-graph`
+- `GET /v1/app/idea-graph/entities/{entity_id}`
+- `GET /v1/app/idea-graph/entities/{entity_id}/mentions`
+
 ### Health / Observability
 - `GET /v1/health`
 - `GET /v1/health/ai-metrics`
@@ -237,6 +263,7 @@ curl http://localhost:8000/v1/health/ai-metrics
 
 ## Useful Docs
 - API contract (active): `docs/api_contract_v1_freeze.md`
+- Mind map implementation: `docs/mind_map_api_implementation.md`
 - AI migration SQL: `docs/postgres_ai_assistant_migration.sql`
 - Daily summary/profile/device migration SQL: `docs/postgres_daily_summary_profile_device_migration.sql`
 - Audio storage migration SQL: `docs/postgres_audio_storage_migration.sql`
