@@ -1086,7 +1086,7 @@ void printSerialHelp() {
   Serial.println("b/B : enter BLE pairing mode");
   Serial.println("x   : reset pairing + enter pairing mode");
   Serial.println("u   : re-auth device token");
-  Serial.println("r   : record and queue one chunk manually");
+  Serial.println("r   : record one chunk and finalize immediately");
   Serial.println("h   : show this help");
   Serial.println("================================");
   Serial.println("Current status: " + String(g_autoStream ? "RECORDING ON" : "STOPPED"));
@@ -1107,8 +1107,8 @@ void processSerialCommand(char cmd, bool allowImmediateRun) {
       }
       break;
     case 'p':
-      if (!g_autoStream) {
-        Serial.println("[REC] Not currently recording.");
+      if (!g_autoStream && g_activeSessionId.isEmpty()) {
+        Serial.println("[REC] No active recording session.");
       } else {
         Serial.println("[REC] STOPPING and finalizing session...");
         g_autoStream = false;
@@ -1132,7 +1132,12 @@ void processSerialCommand(char cmd, bool allowImmediateRun) {
       } else if (!g_isPaired) {
         Serial.println("[REC] Device not paired. Use 'b' to pair.");
       } else {
-        runContinuousChunkOnce();
+        Serial.println("[REC] Recording single chunk and finalizing...");
+        if (runContinuousChunkOnce()) {
+          requestFinalize("manual_chunk");
+        } else {
+          Serial.println("[REC] Manual chunk failed; session not finalized.");
+        }
       }
       break;
     case 'h':

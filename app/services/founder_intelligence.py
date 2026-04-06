@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from difflib import SequenceMatcher
 import json
 import logging
 import re
@@ -29,6 +30,13 @@ from app.utils.time import utc_now
 
 logger = logging.getLogger(__name__)
 
+_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "how", "i",
+    "if", "in", "into", "is", "it", "its", "my", "of", "on", "or", "our", "should", "so",
+    "that", "the", "their", "them", "then", "there", "these", "they", "this", "to", "we",
+    "will", "with", "you", "your",
+}
+
 
 class FounderIntelligenceError(RuntimeError):
     pass
@@ -36,6 +44,53 @@ class FounderIntelligenceError(RuntimeError):
 
 def _normalize_name(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip().lower())
+
+
+def _tokenize(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]{3,}", value.lower())
+        if token not in _STOP_WORDS
+    }
+    return tokens
+
+
+def _combine_text(*parts: str | None) -> str:
+    return " ".join(part.strip() for part in parts if part and part.strip())
+
+
+def _text_overlap_score(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    intersection = len(left & right)
+    union = len(left | right)
+    return intersection / union if union else 0.0
+
+
+def _similarity_ratio(left: str | None, right: str | None) -> float:
+    if not left or not right:
+        return 0.0
+    return SequenceMatcher(a=_normalize_name(left), b=_normalize_name(right)).ratio()
+
+
+def _prefer_text(existing: str | None, incoming: str | None) -> str | None:
+    existing_text = _safe_text(existing)
+    incoming_text = _safe_text(incoming)
+    if incoming_text is None:
+        return existing_text
+    if existing_text is None:
+        return incoming_text
+    return incoming_text if len(incoming_text) >= len(existing_text) else existing_text
+
+
+def _prefer_float(existing: float | None, incoming: float | None) -> float | None:
+    if incoming is None:
+        return existing
+    if existing is None:
+        return incoming
+    return max(existing, incoming)
 
 
 def _strip_code_fence(value: str) -> str:
@@ -139,6 +194,19 @@ def _existing_ideas_context(db: Session, user_id: str, limit: int = 8) -> list[d
     ]
 
 
+def _fetch_existing_ideas(db: Session, user_id: str, limit: int = 20) -> list[FounderIdeaCluster]:
+    return db.scalars(
+        select(FounderIdeaCluster)
+        .where(FounderIdeaCluster.user_id == user_id)
+        .order_by(
+            FounderIdeaCluster.last_seen_at.desc(),
+            FounderIdeaCluster.conviction_score.desc().nullslast(),
+            FounderIdeaCluster.updated_at.desc(),
+        )
+        .limit(limit)
+    ).all()
+
+
 def _current_entities_context(db: Session, session_id: str) -> list[dict[str, Any]]:
     rows = db.execute(
         select(Entity.id, Entity.name, Entity.entity_type, Entity.mention_count)
@@ -156,6 +224,101 @@ def _current_entities_context(db: Session, session_id: str) -> list[dict[str, An
         }
         for entity_id, name, entity_type, mention_count in rows
     ]
+
+
+def _current_entity_names(db: Session, session_id: str) -> set[str]:
+    return {
+        _normalize_name(name)
+        for (name,) in db.execute(
+            select(Entity.name)
+            .join(EntityMention, EntityMention.entity_id == Entity.id)
+            .where(EntityMention.session_id == session_id)
+        ).all()
+        if name
+    }
+
+
+def _score_existing_idea(
+    *,
+    db: Session,
+    transcript_text: str,
+    candidate_title: str | None,
+    current_entities: set[str],
+    idea: FounderIdeaCluster,
+) -> float:
+    transcript_tokens = _tokenize(transcript_text)
+    candidate_tokens = _tokenize(candidate_title)
+    idea_text = _combine_text(idea.title, idea.summary, idea.problem_statement, idea.proposed_solution, idea.target_user)
+    idea_tokens = _tokenize(idea_text)
+
+    text_score = _text_overlap_score(transcript_tokens, idea_tokens)
+    title_score = max(
+        _similarity_ratio(candidate_title, idea.title),
+        _text_overlap_score(candidate_tokens, _tokenize(idea.title)),
+    )
+    entity_score = 0.0
+    if current_entities:
+        idea_entities = {
+            _normalize_name(name)
+            for (name,) in db.execute(
+                select(Entity.name)
+                .join(EntityMention, EntityMention.entity_id == Entity.id)
+                .join(FounderIdeaMemory, FounderIdeaMemory.session_id == EntityMention.session_id)
+                .where(FounderIdeaMemory.idea_cluster_id == idea.id)
+                .distinct()
+                .limit(20)
+            ).all()
+            if name
+        }
+        entity_score = _text_overlap_score(current_entities, idea_entities)
+
+    recency_bonus = 0.08 if (utc_now() - idea.last_seen_at) <= timedelta(days=14) else 0.0
+    conviction_bonus = min(0.08, (idea.conviction_score or 0.0) * 0.08)
+    return (text_score * 0.5) + (title_score * 0.3) + (entity_score * 0.12) + recency_bonus + conviction_bonus
+
+
+def _resolve_existing_idea_match(
+    *,
+    db: Session,
+    user_id: str,
+    transcript_text: str,
+    candidate_title: str | None,
+    llm_matched_id: str | None,
+    current_entities: set[str],
+    existing_ideas_by_id: dict[str, FounderIdeaCluster],
+) -> FounderIdeaCluster | None:
+    if llm_matched_id and llm_matched_id in existing_ideas_by_id:
+        return existing_ideas_by_id[llm_matched_id]
+
+    ideas = list(existing_ideas_by_id.values())
+    best_idea: FounderIdeaCluster | None = None
+    best_score = 0.0
+    for idea in ideas:
+        score = _score_existing_idea(
+            db=db,
+            transcript_text=transcript_text,
+            candidate_title=candidate_title,
+            current_entities=current_entities,
+            idea=idea,
+        )
+        if score > best_score:
+            best_score = score
+            best_idea = idea
+
+    if best_idea is None:
+        return None
+
+    strong_title_match = _similarity_ratio(candidate_title, best_idea.title) >= 0.7
+    if best_score >= 0.33 or strong_title_match:
+        logger.info(
+            "Founder idea matched deterministically user=%s idea=%s score=%.3f title=%s",
+            user_id,
+            best_idea.id,
+            best_score,
+            candidate_title,
+        )
+        return best_idea
+    return None
 
 
 FOUNDER_SYSTEM_PROMPT = """
@@ -300,17 +463,25 @@ def _upsert_idea_cluster(
     user_id: str,
     session_id: str,
     transcript_id: str,
+    transcript_text: str,
     idea_payload: dict[str, Any],
     existing_ideas_by_id: dict[str, FounderIdeaCluster],
+    current_entities: set[str],
 ) -> FounderIdeaCluster | None:
     title = _safe_text(idea_payload.get("title"), max_len=255)
     matched_id = _safe_text(idea_payload.get("matched_idea_cluster_id"), max_len=64)
     create_new = bool(idea_payload.get("create_new"))
 
-    idea: FounderIdeaCluster | None = None
-    if matched_id and matched_id in existing_ideas_by_id:
-        idea = existing_ideas_by_id[matched_id]
-    elif title:
+    idea = _resolve_existing_idea_match(
+        db=db,
+        user_id=user_id,
+        transcript_text=transcript_text,
+        candidate_title=title,
+        llm_matched_id=matched_id,
+        current_entities=current_entities,
+        existing_ideas_by_id=existing_ideas_by_id,
+    )
+    if idea is None and title:
         normalized_title = _normalize_name(title)
         idea = db.scalar(
             select(FounderIdeaCluster).where(
@@ -338,16 +509,16 @@ def _upsert_idea_cluster(
         db.flush()
 
     if title:
-        idea.title = title
+        idea.title = _prefer_text(idea.title, title) or idea.title
         idea.normalized_title = _normalize_name(title)
-    idea.summary = _safe_text(idea_payload.get("summary")) or idea.summary
-    idea.problem_statement = _safe_text(idea_payload.get("problem_statement")) or idea.problem_statement
-    idea.proposed_solution = _safe_text(idea_payload.get("proposed_solution")) or idea.proposed_solution
-    idea.target_user = _safe_text(idea_payload.get("target_user")) or idea.target_user
+    idea.summary = _prefer_text(idea.summary, _safe_text(idea_payload.get("summary")))
+    idea.problem_statement = _prefer_text(idea.problem_statement, _safe_text(idea_payload.get("problem_statement")))
+    idea.proposed_solution = _prefer_text(idea.proposed_solution, _safe_text(idea_payload.get("proposed_solution")))
+    idea.target_user = _prefer_text(idea.target_user, _safe_text(idea_payload.get("target_user")))
     idea.status = _normalize_idea_status(idea_payload.get("status"))
-    idea.confidence = _safe_float(idea_payload.get("confidence"), default=idea.confidence)
-    idea.novelty_score = _safe_float(idea_payload.get("novelty_score"), default=idea.novelty_score)
-    idea.conviction_score = _safe_float(idea_payload.get("conviction_score"), default=idea.conviction_score)
+    idea.confidence = _prefer_float(idea.confidence, _safe_float(idea_payload.get("confidence")))
+    idea.novelty_score = _prefer_float(idea.novelty_score, _safe_float(idea_payload.get("novelty_score")))
+    idea.conviction_score = _prefer_float(idea.conviction_score, _safe_float(idea_payload.get("conviction_score")))
     idea.last_seen_at = now
     idea.mention_count = max(1, int(idea.mention_count or 0))
 
@@ -435,6 +606,19 @@ def _persist_signals(
         title = _safe_text(raw_signal.get("title"), max_len=255)
         if not title:
             continue
+        existing = db.scalar(
+            select(FounderSignal).where(
+                FounderSignal.user_id == user_id,
+                FounderSignal.session_id == session_id,
+                FounderSignal.signal_type == _normalize_signal_type(raw_signal.get("signal_type")),
+                func.lower(FounderSignal.title) == title.lower(),
+            )
+        )
+        if existing:
+            existing.summary = _prefer_text(existing.summary, _safe_text(raw_signal.get("summary")))
+            existing.strength = _prefer_float(existing.strength, _safe_float(raw_signal.get("strength")))
+            existing.idea_cluster_id = idea.id if idea else existing.idea_cluster_id
+            continue
         db.add(
             FounderSignal(
                 user_id=user_id,
@@ -496,8 +680,35 @@ def _upsert_weekly_memo(
     payload = weekly_memo_payload if isinstance(weekly_memo_payload, dict) else {}
     fallback = _build_weekly_memo_fallback(idea, signals_payload, actions_payload)
 
-    top_ideas_json = []
-    if idea is not None:
+    week_end = week_start + timedelta(days=7)
+    top_ideas_rows = db.scalars(
+        select(FounderIdeaCluster)
+        .join(FounderIdeaMemory, FounderIdeaMemory.idea_cluster_id == FounderIdeaCluster.id)
+        .where(
+            FounderIdeaCluster.user_id == user_id,
+            FounderIdeaMemory.created_at >= datetime.combine(week_start, time.min, tzinfo=timezone.utc),
+            FounderIdeaMemory.created_at < datetime.combine(week_end, time.min, tzinfo=timezone.utc),
+        )
+        .distinct()
+        .order_by(
+            FounderIdeaCluster.last_seen_at.desc(),
+            FounderIdeaCluster.conviction_score.desc().nullslast(),
+            FounderIdeaCluster.mention_count.desc(),
+        )
+        .limit(3)
+    ).all()
+
+    top_ideas_json = [
+        {
+            "idea_id": row.id,
+            "title": row.title,
+            "status": row.status,
+            "confidence": row.confidence,
+            "conviction_score": row.conviction_score,
+        }
+        for row in top_ideas_rows
+    ]
+    if not top_ideas_json and idea is not None:
         top_ideas_json.append(
             {
                 "idea_id": idea.id,
@@ -541,8 +752,20 @@ def process_founder_intelligence(db: Session, session_id: str) -> dict[str, Any]
     if not user_id:
         raise FounderIntelligenceError("User context missing for founder extraction")
 
-    existing_ideas = _existing_ideas_context(db, user_id=user_id)
+    all_existing_ideas = _fetch_existing_ideas(db, user_id=user_id, limit=30)
+    existing_ideas = [
+        {
+            "idea_id": row.id,
+            "title": row.title,
+            "summary": row.summary,
+            "status": row.status,
+            "mention_count": row.mention_count,
+            "last_seen_at": row.last_seen_at.isoformat(),
+        }
+        for row in all_existing_ideas[:8]
+    ]
     entities = _current_entities_context(db, session_id=session_id)
+    entity_names = _current_entity_names(db, session_id=session_id)
     payload = extract_founder_payload(
         transcript_text=transcript.full_text,
         transcript_language=transcript.language,
@@ -555,17 +778,16 @@ def process_founder_intelligence(db: Session, session_id: str) -> dict[str, Any]
     actions_payload = payload.get("actions") if isinstance(payload.get("actions"), list) else []
     weekly_memo_payload = payload.get("weekly_memo") if isinstance(payload.get("weekly_memo"), dict) else {}
 
-    existing_ideas_by_id = {
-        idea.id: idea
-        for idea in db.scalars(select(FounderIdeaCluster).where(FounderIdeaCluster.user_id == user_id)).all()
-    }
+    existing_ideas_by_id = {idea.id: idea for idea in all_existing_ideas}
     idea = _upsert_idea_cluster(
         db,
         user_id=user_id,
         session_id=session_id,
         transcript_id=transcript.id,
+        transcript_text=transcript.full_text,
         idea_payload=idea_payload,
         existing_ideas_by_id=existing_ideas_by_id,
+        current_entities=entity_names,
     )
     _upsert_actions(db, user_id=user_id, idea=idea, actions_payload=actions_payload)
     _persist_signals(
