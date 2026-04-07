@@ -10,6 +10,7 @@ class EntityResponse(BaseModel):
     entity_type: str
     name: str
     mention_count: int
+    linked_memory_count: int = 0
     first_seen_at: datetime
     last_seen_at: datetime
 

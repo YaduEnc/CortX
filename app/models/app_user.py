@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 import uuid
 
-from sqlalchemy import Boolean, DateTime, String
+from sqlalchemy import Boolean, DateTime, Integer, LargeBinary, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -14,6 +14,10 @@ class AppUser(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    avatar_blob: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    avatar_content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    avatar_file_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    avatar_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
@@ -24,3 +28,4 @@ class AppUser(Base):
     preferences = relationship("AppUserPreferences", back_populates="user", uselist=False, cascade="all, delete-orphan")
     founder_ideas = relationship("FounderIdeaCluster", back_populates="user", cascade="all, delete-orphan")
     weekly_founder_memos = relationship("WeeklyFounderMemo", back_populates="user", cascade="all, delete-orphan")
+    memory_links = relationship("MemoryLink", back_populates="user", cascade="all, delete-orphan")

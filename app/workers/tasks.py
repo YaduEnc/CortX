@@ -11,11 +11,13 @@ from sqlalchemy import delete, select
 from app.db.session import SessionLocal
 from app.models.assistant import AIExtraction, AIExtractionStatus, AIItem
 from app.models.capture import CaptureSession, SessionStatus
+from app.models.pairing import DeviceUserBinding
 from app.models.transcript import Transcript, TranscriptSegment
 from app.services.assistant_llm import AssistantLLMError, extract_assistant_payload
 from app.services.assistant_pipeline import AssistantPipelineError, prepare_extraction_record
 from app.services.entity_extraction import EntityExtractionError, extract_entities_from_transcript, persist_entities
 from app.services.founder_intelligence import FounderIntelligenceError, process_founder_intelligence
+from app.services.memory_linking import suggest_memory_links_for_session
 from app.services.transcriber import get_transcriber
 from app.utils.time import utc_now
 
@@ -293,13 +295,25 @@ def process_session_founder_intelligence_task(self, session_id: str) -> dict:
     started = time.perf_counter()
     try:
         result = process_founder_intelligence(db, session_id)
+        session = db.scalar(select(CaptureSession).where(CaptureSession.id == session_id))
+        if session:
+            user_id = db.scalar(
+                select(DeviceUserBinding.user_id).where(
+                    DeviceUserBinding.device_id == session.device_id,
+                    DeviceUserBinding.is_active.is_(True),
+                )
+            )
+            if user_id:
+                link_result = suggest_memory_links_for_session(db, user_id=user_id, session_id=session_id)
+                result["link_suggestions"] = link_result
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         logger.info(
-            "Founder intelligence completed session=%s idea_id=%s signals=%s actions=%s elapsed_ms=%s",
+            "Founder intelligence completed session=%s idea_id=%s signals=%s actions=%s links=%s elapsed_ms=%s",
             session_id,
             result.get("idea_id"),
             result.get("signal_count"),
             result.get("action_count"),
+            result.get("link_suggestions"),
             elapsed_ms,
         )
         return {"status": "ok", "session_id": session_id, **result}

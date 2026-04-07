@@ -2,7 +2,7 @@ from datetime import date, datetime, time, timedelta, timezone
 import secrets
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, Response, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import selectinload
@@ -16,6 +16,7 @@ from app.models.capture import CaptureSession, SessionStatus
 from app.models.app_user import AppUser
 from app.models.device import Device
 from app.models.founder import FounderIdeaAction, FounderIdeaActionStatus, FounderIdeaCluster, FounderIdeaMemory, FounderSignal, WeeklyFounderMemo
+from app.models.memory_link import MemoryLink, MemoryLinkSource, MemoryLinkStatus, MemoryLinkType
 from app.models.pairing import DeviceUserBinding, PairingSession
 from app.models.password_reset import AppPasswordResetToken
 from app.models.user_preferences import AppUserPreferences
@@ -70,7 +71,21 @@ from app.schemas.founder import (
     FounderWeeklyMemoResponse,
     FounderIdeasListResponse,
 )
+from app.schemas.memory import (
+    LinkTargetSearchEntityResponse,
+    LinkTargetSearchFounderIdeaResponse,
+    LinkTargetSearchResponse,
+    MemoryLinkCreateRequest,
+    MemoryLinkResponse,
+    MemoryLinkUpdateRequest,
+    MemoryLinkedEntityResponse,
+    MemoryLinkedFounderIdeaResponse,
+    MemorySearchResponse,
+    MemorySearchResultResponse,
+)
 from app.models.entity import Entity, EntityMention
+from app.services.memory_linking import create_founder_idea_for_link, create_or_reuse_entity_for_link, upsert_memory_link
+from app.services.memory_search import search_memories
 from app.utils.time import utc_now
 from app.workers.celery_app import celery_app
 from fastapi.responses import StreamingResponse
@@ -188,6 +203,17 @@ def _map_ai_item(item: AIItem) -> AppAssistantItemResponse:
     )
 
 
+def _map_app_me(user: AppUser) -> AppMeResponse:
+    return AppMeResponse(
+        user_id=user.id,
+        email=user.email,
+        full_name=user.full_name,
+        has_avatar=bool(user.avatar_blob),
+        avatar_updated_at=user.avatar_updated_at,
+        created_at=user.created_at,
+    )
+
+
 def _map_ai_extraction(extraction: AIExtraction) -> AppCaptureAIExtractionResponse:
     return AppCaptureAIExtractionResponse(
         extraction_id=extraction.id,
@@ -257,6 +283,51 @@ def _map_founder_signal(signal: FounderSignal) -> FounderSignalResponse:
     )
 
 
+def _map_memory_link(link: MemoryLink) -> MemoryLinkResponse:
+    entity = None
+    founder_idea = None
+    if link.entity is not None:
+        entity = MemoryLinkedEntityResponse(
+            entity_id=link.entity.id,
+            entity_type=link.entity.entity_type,
+            name=link.entity.name,
+        )
+    if link.founder_idea is not None:
+        founder_idea = MemoryLinkedFounderIdeaResponse(
+            idea_id=link.founder_idea.id,
+            title=link.founder_idea.title,
+            status=link.founder_idea.status,
+        )
+    return MemoryLinkResponse(
+        link_id=link.id,
+        session_id=link.session_id,
+        link_type=link.link_type,
+        source=link.source,
+        status=link.status,
+        confidence=link.confidence,
+        created_at=link.created_at,
+        updated_at=link.updated_at,
+        entity=entity,
+        founder_idea=founder_idea,
+    )
+
+
+def _get_owned_capture_session(db: Session, *, user_id: str, session_id: str):
+    session = db.scalar(
+        select(CaptureSession)
+        .join(
+            DeviceUserBinding,
+            (DeviceUserBinding.device_id == CaptureSession.device_id)
+            & (DeviceUserBinding.user_id == user_id)
+            & (DeviceUserBinding.is_active.is_(True)),
+        )
+        .where(CaptureSession.id == session_id)
+    )
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    return session
+
+
 @router.post("/register", response_model=AppTokenResponse, status_code=status.HTTP_201_CREATED)
 def register_app_user(payload: AppRegisterRequest, db: Session = Depends(get_db)) -> AppTokenResponse:
     email = payload.email.lower().strip()
@@ -290,6 +361,8 @@ def auth_app_user(payload: AppAuthRequest, db: Session = Depends(get_db)) -> App
     return AppTokenResponse(access_token=token, expires_in_minutes=settings.jwt_expires_minutes)
 
 
+from app.services.email import send_reset_email
+
 @router.post("/password/forgot/request", response_model=AppForgotPasswordRequestResponse)
 def request_password_reset(payload: AppForgotPasswordRequest, db: Session = Depends(get_db)) -> AppForgotPasswordRequestResponse:
     email = payload.email.lower().strip()
@@ -322,6 +395,9 @@ def request_password_reset(payload: AppForgotPasswordRequest, db: Session = Depe
         )
     )
     db.commit()
+
+    # Dispatch the beautiful HTML email to our local Mailpit instance!
+    send_reset_email(to_email=user.email, reset_token=reset_token)
 
     expose_token = settings.environment.lower() != "production"
     return AppForgotPasswordRequestResponse(
@@ -373,12 +449,7 @@ def confirm_password_reset(payload: AppForgotPasswordConfirmRequest, db: Session
 def get_current_app_user_profile(
     user: AppUser = Depends(get_current_app_user),
 ) -> AppMeResponse:
-    return AppMeResponse(
-        user_id=user.id,
-        email=user.email,
-        full_name=user.full_name,
-        created_at=user.created_at,
-    )
+    return _map_app_me(user)
 
 
 @router.patch("/me", response_model=AppMeResponse)
@@ -392,12 +463,69 @@ def update_current_app_user_profile(
         user.full_name = value or None
     db.commit()
     db.refresh(user)
-    return AppMeResponse(
-        user_id=user.id,
-        email=user.email,
-        full_name=user.full_name,
-        created_at=user.created_at,
+    return _map_app_me(user)
+
+
+@router.get("/me/avatar")
+def get_current_app_user_avatar(
+    user: AppUser = Depends(get_current_app_user),
+) -> StreamingResponse:
+    if not user.avatar_blob or not user.avatar_content_type:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile photo not found")
+
+    headers = {
+        "Content-Length": str(len(user.avatar_blob)),
+        "Cache-Control": "private, max-age=300",
+    }
+    return StreamingResponse(
+        io.BytesIO(user.avatar_blob),
+        media_type=user.avatar_content_type,
+        headers=headers,
     )
+
+
+@router.put("/me/avatar", response_model=AppMeResponse)
+async def upload_current_app_user_avatar(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppMeResponse:
+    content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    allowed_types = {"image/jpeg", "image/png", "image/heic", "image/heif", "image/webp"}
+    if content_type not in allowed_types:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Profile photo must be JPEG, PNG, HEIC, HEIF, or WEBP",
+        )
+
+    image_bytes = await request.body()
+    if not image_bytes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Profile photo payload is empty")
+    max_bytes = 10 * 1024 * 1024
+    if len(image_bytes) > max_bytes:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Profile photo exceeds 10 MB")
+
+    user.avatar_blob = image_bytes
+    user.avatar_content_type = content_type
+    user.avatar_file_size_bytes = len(image_bytes)
+    user.avatar_updated_at = utc_now()
+    db.commit()
+    db.refresh(user)
+    return _map_app_me(user)
+
+
+@router.delete("/me/avatar", response_model=AppMeResponse)
+def delete_current_app_user_avatar(
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppMeResponse:
+    user.avatar_blob = None
+    user.avatar_content_type = None
+    user.avatar_file_size_bytes = None
+    user.avatar_updated_at = None
+    db.commit()
+    db.refresh(user)
+    return _map_app_me(user)
 
 
 @router.get("/me/preferences", response_model=AppUserPreferencesResponse)
@@ -895,6 +1023,282 @@ def list_user_captures(
     ]
 
 
+@router.get("/memories/search", response_model=MemorySearchResponse)
+def search_user_memories(
+    q: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    entity_type: str | None = None,
+    idea_id: str | None = None,
+    has_tasks: bool | None = None,
+    has_reminders: bool | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> MemorySearchResponse:
+    capped_limit = max(1, min(limit, 100))
+    safe_offset = max(0, offset)
+    normalized_entity_type = entity_type.strip().lower() if entity_type else None
+    if normalized_entity_type and normalized_entity_type not in {"person", "project", "place"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid entity_type")
+
+    result = search_memories(
+        db,
+        user_id=user.id,
+        query=q,
+        limit=capped_limit,
+        offset=safe_offset,
+        entity_type=normalized_entity_type,
+        idea_id=idea_id,
+        has_tasks=has_tasks,
+        has_reminders=has_reminders,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return MemorySearchResponse(
+        query=q,
+        total=result["total"],
+        limit=capped_limit,
+        offset=safe_offset,
+        results=[MemorySearchResultResponse(**row) for row in result["results"]],
+    )
+
+
+@router.get("/captures/{session_id}/links", response_model=list[MemoryLinkResponse])
+def list_capture_links(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> list[MemoryLinkResponse]:
+    _get_owned_capture_session(db, user_id=user.id, session_id=session_id)
+    links = db.scalars(
+        select(MemoryLink)
+        .where(MemoryLink.user_id == user.id, MemoryLink.session_id == session_id)
+        .options(selectinload(MemoryLink.entity), selectinload(MemoryLink.founder_idea))
+        .order_by(
+            MemoryLink.status.asc(),
+            MemoryLink.created_at.asc(),
+        )
+    ).all()
+    return [_map_memory_link(link) for link in links]
+
+
+@router.post("/captures/{session_id}/links", response_model=MemoryLinkResponse, status_code=status.HTTP_201_CREATED)
+def create_capture_link(
+    session_id: str,
+    payload: MemoryLinkCreateRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> MemoryLinkResponse:
+    _get_owned_capture_session(db, user_id=user.id, session_id=session_id)
+
+    link_type = payload.link_type.strip().lower()
+    is_founder_link = link_type == MemoryLinkType.founder_idea.value
+    has_existing_target = bool(payload.entity_id or payload.founder_idea_id)
+    has_create_target = bool(payload.create_name and payload.create_name.strip())
+
+    if has_existing_target and has_create_target:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose an existing target or create a new one, not both")
+    if not has_existing_target and not has_create_target:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target is required")
+
+    entity_id: str | None = None
+    founder_idea_id: str | None = None
+    source = MemoryLinkSource.manual.value
+
+    if has_create_target:
+        source = MemoryLinkSource.manual_created.value
+        create_name = payload.create_name.strip()
+        if is_founder_link:
+            idea = create_founder_idea_for_link(
+                db,
+                user_id=user.id,
+                title=create_name,
+                summary=payload.create_summary,
+                target_user=payload.create_target_user,
+            )
+            founder_idea_id = idea.id
+        else:
+            entity = create_or_reuse_entity_for_link(
+                db,
+                user_id=user.id,
+                link_type=link_type,
+                name=create_name,
+            )
+            entity_id = entity.id
+    elif is_founder_link:
+        if not payload.founder_idea_id or payload.entity_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="founder_idea links require founder_idea_id")
+        idea = db.scalar(
+            select(FounderIdeaCluster).where(
+                FounderIdeaCluster.id == payload.founder_idea_id,
+                FounderIdeaCluster.user_id == user.id,
+            )
+        )
+        if not idea:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Founder idea not found")
+        founder_idea_id = idea.id
+    else:
+        if not payload.entity_id or payload.founder_idea_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Entity links require entity_id")
+        entity = db.scalar(
+            select(Entity).where(
+                Entity.id == payload.entity_id,
+                Entity.user_id == user.id,
+            )
+        )
+        if not entity:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found")
+        if entity.entity_type != link_type:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Entity type does not match link_type")
+        entity_id = entity.id
+
+    link = upsert_memory_link(
+        db,
+        user_id=user.id,
+        session_id=session_id,
+        link_type=link_type,
+        entity_id=entity_id,
+        founder_idea_id=founder_idea_id,
+        source=source,
+        status=MemoryLinkStatus.confirmed.value,
+        confidence=1.0 if source == MemoryLinkSource.manual_created.value else None,
+    )
+    db.commit()
+    link = db.scalar(
+        select(MemoryLink)
+        .where(MemoryLink.id == link.id)
+        .options(selectinload(MemoryLink.entity), selectinload(MemoryLink.founder_idea))
+    )
+    return _map_memory_link(link)
+
+
+@router.patch("/captures/{session_id}/links/{link_id}", response_model=MemoryLinkResponse)
+def update_capture_link(
+    session_id: str,
+    link_id: str,
+    payload: MemoryLinkUpdateRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> MemoryLinkResponse:
+    _get_owned_capture_session(db, user_id=user.id, session_id=session_id)
+    link = db.scalar(
+        select(MemoryLink)
+        .where(
+            MemoryLink.id == link_id,
+            MemoryLink.user_id == user.id,
+            MemoryLink.session_id == session_id,
+        )
+        .options(selectinload(MemoryLink.entity), selectinload(MemoryLink.founder_idea))
+    )
+    if not link:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Memory link not found")
+
+    if payload.status is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="status is required")
+    link.status = payload.status
+    db.commit()
+    db.refresh(link)
+    return _map_memory_link(link)
+
+
+@router.delete("/captures/{session_id}/links/{link_id}", response_model=AppActionStatusResponse)
+def delete_capture_link(
+    session_id: str,
+    link_id: str,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppActionStatusResponse:
+    _get_owned_capture_session(db, user_id=user.id, session_id=session_id)
+    link = db.scalar(
+        select(MemoryLink).where(
+            MemoryLink.id == link_id,
+            MemoryLink.user_id == user.id,
+            MemoryLink.session_id == session_id,
+        )
+    )
+    if not link:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Memory link not found")
+    db.delete(link)
+    db.commit()
+    return AppActionStatusResponse(status="deleted", message="Memory link deleted")
+
+
+@router.get("/link-targets/search", response_model=LinkTargetSearchResponse)
+def search_link_targets(
+    q: str = "",
+    types: str | None = None,
+    limit: int = 12,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> LinkTargetSearchResponse:
+    capped_limit = max(1, min(limit, 50))
+    requested_types = {
+        part.strip().lower()
+        for part in (types.split(",") if types else ["person", "project", "place", "founder_idea"])
+        if part.strip()
+    }
+    allowed_types = {"person", "project", "place", "founder_idea"}
+    invalid = requested_types - allowed_types
+    if invalid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid types: {', '.join(sorted(invalid))}")
+
+    query_text = q.strip().lower()
+    like_query = f"%{query_text.replace('%', '').replace('_', '').strip()}%" if query_text else None
+
+    entities: list[LinkTargetSearchEntityResponse] = []
+    founder_ideas: list[LinkTargetSearchFounderIdeaResponse] = []
+
+    entity_types = sorted(requested_types & {"person", "project", "place"})
+    if entity_types:
+        stmt = select(Entity).where(Entity.user_id == user.id, Entity.entity_type.in_(entity_types))
+        if like_query:
+            stmt = stmt.where(
+                or_(
+                    func.lower(Entity.name).like(like_query, escape="\\"),
+                    Entity.normalized_name.like(like_query, escape="\\"),
+                )
+            )
+        entity_rows = db.scalars(
+            stmt.order_by(Entity.mention_count.desc(), Entity.last_seen_at.desc()).limit(capped_limit)
+        ).all()
+        entities = [
+            LinkTargetSearchEntityResponse(
+                entity_id=row.id,
+                entity_type=row.entity_type,
+                name=row.name,
+                mention_count=row.mention_count,
+            )
+            for row in entity_rows
+        ]
+
+    if "founder_idea" in requested_types:
+        stmt = select(FounderIdeaCluster).where(FounderIdeaCluster.user_id == user.id)
+        if like_query:
+            stmt = stmt.where(
+                or_(
+                    func.lower(FounderIdeaCluster.title).like(like_query, escape="\\"),
+                    func.lower(func.coalesce(FounderIdeaCluster.summary, "")).like(like_query, escape="\\"),
+                    func.lower(func.coalesce(FounderIdeaCluster.target_user, "")).like(like_query, escape="\\"),
+                )
+            )
+        idea_rows = db.scalars(
+            stmt.order_by(FounderIdeaCluster.last_seen_at.desc(), FounderIdeaCluster.mention_count.desc()).limit(capped_limit)
+        ).all()
+        founder_ideas = [
+            LinkTargetSearchFounderIdeaResponse(
+                idea_id=row.id,
+                title=row.title,
+                status=row.status,
+                mention_count=row.mention_count,
+            )
+            for row in idea_rows
+        ]
+
+    return LinkTargetSearchResponse(entities=entities, founder_ideas=founder_ideas)
+
+
 @router.get("/captures/{session_id}/transcript", response_model=AppCaptureTranscriptResponse)
 def get_user_capture_transcript(
     session_id: str,
@@ -1371,6 +1775,18 @@ def get_idea_graph(
     entities = db.scalars(
         query.order_by(Entity.mention_count.desc(), Entity.last_seen_at.desc()).limit(capped_limit)
     ).all()
+    linked_counts: dict[str, int] = {}
+    if entities:
+        linked_rows = db.execute(
+            select(MemoryLink.entity_id, func.count(func.distinct(MemoryLink.session_id)))
+            .where(
+                MemoryLink.user_id == user.id,
+                MemoryLink.entity_id.in_([entity.id for entity in entities]),
+                MemoryLink.status != MemoryLinkStatus.rejected.value,
+            )
+            .group_by(MemoryLink.entity_id)
+        ).all()
+        linked_counts = {entity_id: int(count) for entity_id, count in linked_rows}
 
     nodes = [
         EntityResponse(
@@ -1378,6 +1794,7 @@ def get_idea_graph(
             entity_type=e.entity_type,
             name=e.name,
             mention_count=e.mention_count,
+            linked_memory_count=linked_counts.get(e.id, 0),
             first_seen_at=e.first_seen_at,
             last_seen_at=e.last_seen_at,
         )
@@ -1452,11 +1869,23 @@ def get_entity_detail(
     if not entity:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found")
 
+    linked_memory_count = int(
+        db.scalar(
+            select(func.count(func.distinct(MemoryLink.session_id))).where(
+                MemoryLink.user_id == user.id,
+                MemoryLink.entity_id == entity.id,
+                MemoryLink.status != MemoryLinkStatus.rejected.value,
+            )
+        )
+        or 0
+    )
+
     return EntityResponse(
         entity_id=entity.id,
         entity_type=entity.entity_type,
         name=entity.name,
         mention_count=entity.mention_count,
+        linked_memory_count=linked_memory_count,
         first_seen_at=entity.first_seen_at,
         last_seen_at=entity.last_seen_at,
     )

@@ -10,6 +10,7 @@ from app.models.founder import (
     FounderSignal,
     WeeklyFounderMemo,
 )
+from app.models.memory_link import MemoryLink
 from app.models.pairing import DeviceUserBinding, PairingSession
 from app.models.password_reset import AppPasswordResetToken
 from app.models.transcript import Transcript, TranscriptSegment
@@ -35,4 +36,5 @@ __all__ = [
     "FounderIdeaAction",
     "FounderSignal",
     "WeeklyFounderMemo",
+    "MemoryLink",
 ]

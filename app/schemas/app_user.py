@@ -50,6 +50,8 @@ class AppMeResponse(BaseModel):
     user_id: str
     email: EmailStr
     full_name: str | None
+    has_avatar: bool
+    avatar_updated_at: datetime | None = None
     created_at: datetime
 
 

@@ -89,6 +89,15 @@ services:
     networks:
       - secondmind-net
 
+  mailpit:
+    image: axllent/mailpit
+    container_name: secondmind-mailpit
+    ports:
+      - "8025:8025" # Web UI
+      - "1025:1025" # SMTP Port
+    networks:
+      - secondmind-net
+
 volumes:
   postgres_data:
   redis_data:
