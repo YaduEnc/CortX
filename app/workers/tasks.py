@@ -24,6 +24,8 @@ from app.services.memory_card_summary import (
 )
 from app.services.memory_linking import suggest_memory_links_for_session
 from app.services.transcriber import get_transcriber
+from app.services.embeddings import get_embeddings
+from app.services.vector_store import get_vector_store
 from app.utils.time import utc_now
 
 logger = logging.getLogger(__name__)
@@ -85,16 +87,51 @@ def process_session_transcription(self, session_id: str) -> dict:
             transcript.duration_seconds = result.get("duration_seconds")
             db.execute(delete(TranscriptSegment).where(TranscriptSegment.transcript_id == transcript.id))
 
+        segments_to_index = []
         for seg in result.get("segments", []):
-            db.add(
-                TranscriptSegment(
-                    transcript_id=transcript.id,
-                    segment_index=seg["segment_index"],
-                    start_seconds=seg["start_seconds"],
-                    end_seconds=seg["end_seconds"],
-                    text=seg["text"],
+            segment_obj = TranscriptSegment(
+                transcript_id=transcript.id,
+                segment_index=seg["segment_index"],
+                start_seconds=seg["start_seconds"],
+                end_seconds=seg["end_seconds"],
+                text=seg["text"],
+            )
+            db.add(segment_obj)
+            segments_to_index.append(segment_obj)
+
+        db.flush() # Ensure segment_obj.id is populated
+
+        # --- Vector Indexing ---
+        try:
+            user_id = db.scalar(
+                select(DeviceUserBinding.user_id).where(
+                    DeviceUserBinding.device_id == session.device_id,
+                    DeviceUserBinding.is_active.is_(True),
                 )
             )
+            if user_id:
+                vector_store = get_vector_store()
+                for seg_obj in segments_to_index:
+                    if not seg_obj.text.strip():
+                        continue
+                    try:
+                        vector = get_embeddings(seg_obj.text)
+                        vector_store.upsert_segment(
+                            segment_id=seg_obj.id,
+                            vector=vector,
+                            metadata={
+                                "user_id": user_id,
+                                "session_id": session.id,
+                                "transcript_id": transcript.id,
+                                "text": seg_obj.text,
+                                "start_seconds": seg_obj.start_seconds,
+                                "created_at": transcript.created_at.isoformat(),
+                            }
+                        )
+                    except Exception as embed_exc:
+                        logger.warning(f"Failed to index segment {seg_obj.id}: {embed_exc}")
+        except Exception as vector_exc:
+            logger.warning(f"Vector indexing failed for session {session_id}: {vector_exc}")
 
         fallback_title, fallback_gist = build_memory_card_fallback(transcript.full_text)
         session.memory_title = fallback_title

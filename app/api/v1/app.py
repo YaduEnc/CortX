@@ -87,6 +87,8 @@ from app.models.entity import Entity, EntityMention
 from app.services.memory_card_summary import build_memory_card_fallback
 from app.services.memory_linking import create_founder_idea_for_link, create_or_reuse_entity_for_link, upsert_memory_link
 from app.services.memory_search import search_memories
+from app.services.semantic_search import query_memories_semantically
+from app.schemas.memory import AppMemoryQueryRequest, AppMemoryQueryResponse
 from app.utils.time import utc_now
 from app.workers.celery_app import celery_app
 from fastapi.responses import StreamingResponse
@@ -1090,6 +1092,23 @@ def search_user_memories(
         offset=safe_offset,
         results=[MemorySearchResultResponse(**row) for row in result["results"]],
     )
+
+
+@router.post("/memories/ask", response_model=AppMemoryQueryResponse)
+def ask_memories_semantically(
+    payload: AppMemoryQueryRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+) -> AppMemoryQueryResponse:
+    """
+    Perform a natural language query over all recorded memories using vector search and LLM synthesis.
+    """
+    result = query_memories_semantically(
+        db=db,
+        user_id=user.id,
+        query=payload.query
+    )
+    return AppMemoryQueryResponse(**result)
 
 
 @router.get("/captures/{session_id}/links", response_model=list[MemoryLinkResponse])

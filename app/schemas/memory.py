@@ -87,3 +87,18 @@ class MemorySearchResponse(BaseModel):
     limit: int
     offset: int
     results: list[MemorySearchResultResponse]
+
+
+class AppMemoryQueryRequest(BaseModel):
+    query: str = Field(min_length=3, max_length=1000)
+
+
+class AppMemoryQuerySource(BaseModel):
+    session_id: str
+    text: str | None
+    created_at: str | None
+
+
+class AppMemoryQueryResponse(BaseModel):
+    answer: str
+    sources: list[AppMemoryQuerySource]

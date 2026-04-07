@@ -98,12 +98,24 @@ services:
     networks:
       - secondmind-net
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: secondmind-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage:z
+    networks:
+      - secondmind-net
+
 volumes:
   postgres_data:
   redis_data:
   minio_data:
   hf_cache:
   whisper_models:
+  qdrant_data:
 
 networks:
   secondmind-net:

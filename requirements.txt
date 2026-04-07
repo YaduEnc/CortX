@@ -16,3 +16,4 @@ orjson==3.11.3
 requests==2.32.3
 email-validator==2.2.0
 supabase==2.15.3
+qdrant-client==1.13.3

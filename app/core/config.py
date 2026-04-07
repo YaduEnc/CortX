@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     lmstudio_timeout_seconds: int = 45
     lmstudio_temperature: float = 0.0
 
+    qdrant_url: str = "http://qdrant:6333"
+    qdrant_api_key: str | None = None
+
     max_chunk_bytes: int = 768000
     stream_token_ttl_seconds: int = 900
     stream_max_frame_bytes: int = 32768
