@@ -67,6 +67,8 @@ class MemorySearchResultResponse(BaseModel):
     device_id: str
     device_code: str
     status: str
+    memory_title: str | None = None
+    memory_gist: str | None = None
     total_chunks: int
     started_at: datetime
     finalized_at: datetime | None

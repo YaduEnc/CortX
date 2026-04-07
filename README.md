@@ -263,7 +263,8 @@ curl http://localhost:8000/v1/health/ai-metrics
 ### App Memory + Assistant
 - `POST /v1/app/captures/upload-wav`
 - `GET /v1/app/dashboard/daily-summary`
-- `GET /v1/app/captures`
+- `GET /v1/app/captures` returns `memory_title` and `memory_gist` for card rendering
+- `GET /v1/app/memories/search`
 - `GET /v1/app/captures/{session_id}/audio`
 - `GET /v1/app/captures/{session_id}/transcript`
 - `GET /v1/app/captures/{session_id}/ai`

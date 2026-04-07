@@ -30,6 +30,8 @@ class CaptureSession(Base):
     audio_blob_wav: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, deferred=True)
     audio_blob_content_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     audio_blob_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_title: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    memory_gist: Mapped[str | None] = mapped_column(String(240), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

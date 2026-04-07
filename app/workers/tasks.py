@@ -17,6 +17,11 @@ from app.services.assistant_llm import AssistantLLMError, extract_assistant_payl
 from app.services.assistant_pipeline import AssistantPipelineError, prepare_extraction_record
 from app.services.entity_extraction import EntityExtractionError, extract_entities_from_transcript, persist_entities
 from app.services.founder_intelligence import FounderIntelligenceError, process_founder_intelligence
+from app.services.memory_card_summary import (
+    MemoryCardSummaryError,
+    build_memory_card_fallback,
+    extract_memory_card_summary,
+)
 from app.services.memory_linking import suggest_memory_links_for_session
 from app.services.transcriber import get_transcriber
 from app.utils.time import utc_now
@@ -91,6 +96,9 @@ def process_session_transcription(self, session_id: str) -> dict:
                 )
             )
 
+        fallback_title, fallback_gist = build_memory_card_fallback(transcript.full_text)
+        session.memory_title = fallback_title
+        session.memory_gist = fallback_gist
         session.status = SessionStatus.done.value
         session.error_message = None
         session.finalized_at = session.finalized_at or utc_now()
@@ -201,6 +209,30 @@ def process_session_ai_extraction(self, session_id: str) -> dict:
         extraction.error_message = None
         extraction.completed_at = utc_now()
         db.commit()
+
+        session = db.scalar(select(CaptureSession).where(CaptureSession.id == session_id))
+        if session is not None:
+            try:
+                card = extract_memory_card_summary(
+                    transcript_text=transcript.full_text,
+                    transcript_language=transcript.language,
+                    assistant_summary=payload["summary"],
+                )
+                session.memory_title = card["memory_title"]
+                session.memory_gist = card["memory_gist"]
+            except MemoryCardSummaryError as exc:
+                fallback_title, fallback_gist = build_memory_card_fallback(
+                    transcript.full_text,
+                    assistant_summary=payload["summary"],
+                )
+                session.memory_title = fallback_title
+                session.memory_gist = fallback_gist
+                logger.warning(
+                    "Memory card summary fallback used for session=%s: %s",
+                    session_id,
+                    exc,
+                )
+            db.commit()
 
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         logger.info(

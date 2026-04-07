@@ -15,6 +15,7 @@ from app.models.founder import FounderIdeaCluster, FounderIdeaMemory
 from app.models.memory_link import MemoryLink
 from app.models.pairing import DeviceUserBinding
 from app.models.transcript import Transcript
+from app.services.memory_card_summary import build_memory_card_fallback
 
 _SOURCE_ORDER = ["transcript", "summary", "task", "reminder", "entity", "founder_idea"]
 
@@ -231,6 +232,8 @@ def search_memories(
             CaptureSession.device_id.label("device_id"),
             Device.device_code.label("device_code"),
             CaptureSession.status.label("status"),
+            CaptureSession.memory_title.label("memory_title"),
+            CaptureSession.memory_gist.label("memory_gist"),
             CaptureSession.total_chunks.label("total_chunks"),
             CaptureSession.started_at.label("started_at"),
             CaptureSession.finalized_at.label("finalized_at"),
@@ -300,6 +303,15 @@ def search_memories(
     results = []
     for row in rows:
         session_id = row["session_id"]
+        memory_title = row["memory_title"]
+        memory_gist = row["memory_gist"]
+        if not memory_title or not memory_gist:
+            fallback_title, fallback_gist = build_memory_card_fallback(
+                row.get("transcript_text"),
+                assistant_summary=row.get("summary"),
+            )
+            memory_title = memory_title or fallback_title
+            memory_gist = memory_gist or fallback_gist
         matched_entities = _load_matched_entities(
             db,
             user_id=user_id,
@@ -338,6 +350,8 @@ def search_memories(
                 "device_id": row["device_id"],
                 "device_code": row["device_code"],
                 "status": row["status"],
+                "memory_title": memory_title,
+                "memory_gist": memory_gist,
                 "total_chunks": row["total_chunks"],
                 "started_at": row["started_at"],
                 "finalized_at": row["finalized_at"],

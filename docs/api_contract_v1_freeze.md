@@ -429,6 +429,8 @@ Response `201`:
     "device_id":"<uuid>",
     "device_code":"manu",
     "status":"done",
+    "memory_title":"PM Meeting Preparation",
+    "memory_gist":"Need to contact office and gather documents before the meeting.",
     "total_chunks":4,
     "started_at":"2026-04-03T13:32:00Z",
     "finalized_at":"2026-04-03T13:32:35Z",
@@ -437,6 +439,14 @@ Response `201`:
   }
 ]
 ```
+
+Memory card fields:
+- `memory_title`: compact AI-generated label, max 5 words for memory cards
+- `memory_gist`: one-line AI-generated description of what the memory is about
+- both fields may be `null` on old rows or sessions still being processed
+- fallback UI should use:
+  - title: `Processing Memory`
+  - gist: `Transcript and summary are still being prepared.`
 
 ### `GET /v1/app/captures/{session_id}/audio`
 Response `200`: binary WAV (`audio/wav`).
@@ -453,6 +463,55 @@ Returns extraction status + intent/summary/plan + assistant items.
 ```json
 {"session_id":"<uuid>","extraction_id":"<uuid>","status":"queued","queued":true}
 ```
+
+### `GET /v1/app/memories/search?q=meeting&limit=20&offset=0&entity_type=person&has_tasks=true`
+Response `200`:
+```json
+{
+  "query":"meeting",
+  "total":1,
+  "limit":20,
+  "offset":0,
+  "results":[
+    {
+      "session_id":"<uuid>",
+      "device_id":"<uuid>",
+      "device_code":"manu",
+      "status":"done",
+      "memory_title":"PM Meeting Preparation",
+      "memory_gist":"Need to contact office and gather documents before the meeting.",
+      "total_chunks":4,
+      "started_at":"2026-04-03T13:32:00Z",
+      "finalized_at":"2026-04-03T13:32:35Z",
+      "duration_seconds":31.8,
+      "has_audio":true,
+      "score":9.42,
+      "snippet":"Meet with PM Modi tomorrow and gather the required documents...",
+      "match_sources":["transcript","task","entity"],
+      "matched_entities":[
+        {
+          "entity_id":"<uuid>",
+          "entity_type":"person",
+          "name":"PM Modi"
+        }
+      ],
+      "matched_founder_ideas":[]
+    }
+  ]
+}
+```
+
+Search notes:
+- search is memory-first; each row is still a capture session
+- `memory_title` and `memory_gist` are returned here too so search results can reuse the same card UI as the dashboard
+- `snippet` explains why the search matched
+- `match_sources` can include:
+  - `transcript`
+  - `summary`
+  - `task`
+  - `reminder`
+  - `entity`
+  - `founder_idea`
 
 ### `GET /v1/app/assistant/items?item_type=task|reminder|plan_step&item_status=open|done|dismissed|snoozed&limit=60`
 Returns list of assistant items scoped to current user.

@@ -1,0 +1,3 @@
+ALTER TABLE capture_sessions
+  ADD COLUMN IF NOT EXISTS memory_title VARCHAR(120),
+  ADD COLUMN IF NOT EXISTS memory_gist VARCHAR(240);

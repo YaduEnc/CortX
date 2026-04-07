@@ -84,6 +84,7 @@ from app.schemas.memory import (
     MemorySearchResultResponse,
 )
 from app.models.entity import Entity, EntityMention
+from app.services.memory_card_summary import build_memory_card_fallback
 from app.services.memory_linking import create_founder_idea_for_link, create_or_reuse_entity_for_link, upsert_memory_link
 from app.services.memory_search import search_memories
 from app.utils.time import utc_now
@@ -310,6 +311,22 @@ def _map_memory_link(link: MemoryLink) -> MemoryLinkResponse:
         entity=entity,
         founder_idea=founder_idea,
     )
+
+
+def _resolve_memory_card_fields(
+    session: CaptureSession,
+    *,
+    transcript_text: str | None = None,
+    assistant_summary: str | None = None,
+) -> tuple[str | None, str | None]:
+    if session.memory_title and session.memory_gist:
+        return session.memory_title, session.memory_gist
+    if transcript_text or assistant_summary:
+        return build_memory_card_fallback(
+            transcript_text,
+            assistant_summary=assistant_summary,
+        )
+    return None, None
 
 
 def _get_owned_capture_session(db: Session, *, user_id: str, session_id: str):
@@ -994,7 +1011,7 @@ def list_user_captures(
     capped_limit = max(1, min(limit, 100))
 
     rows = db.execute(
-        select(CaptureSession, Device, Transcript)
+        select(CaptureSession, Device, Transcript, AIExtraction)
         .join(Device, Device.id == CaptureSession.device_id)
         .join(
             DeviceUserBinding,
@@ -1003,24 +1020,34 @@ def list_user_captures(
             & (DeviceUserBinding.is_active.is_(True)),
         )
         .outerjoin(Transcript, Transcript.session_id == CaptureSession.id)
+        .outerjoin(AIExtraction, AIExtraction.session_id == CaptureSession.id)
         .order_by(CaptureSession.started_at.desc())
         .limit(capped_limit)
     ).all()
 
-    return [
-        AppCaptureListItemResponse(
-            session_id=session.id,
-            device_id=device.id,
-            device_code=device.device_code,
-            status=session.status,
-            total_chunks=session.total_chunks,
-            started_at=session.started_at,
-            finalized_at=session.finalized_at,
-            duration_seconds=transcript.duration_seconds if transcript else None,
-            has_audio=bool((session.audio_blob_size_bytes or 0) > 0 or session.assembled_object_key),
+    items: list[AppCaptureListItemResponse] = []
+    for session, device, transcript, extraction in rows:
+        memory_title, memory_gist = _resolve_memory_card_fields(
+            session,
+            transcript_text=transcript.full_text if transcript else None,
+            assistant_summary=extraction.summary if extraction else None,
         )
-        for session, device, transcript in rows
-    ]
+        items.append(
+            AppCaptureListItemResponse(
+                session_id=session.id,
+                device_id=device.id,
+                device_code=device.device_code,
+                status=session.status,
+                memory_title=memory_title,
+                memory_gist=memory_gist,
+                total_chunks=session.total_chunks,
+                started_at=session.started_at,
+                finalized_at=session.finalized_at,
+                duration_seconds=transcript.duration_seconds if transcript else None,
+                has_audio=bool((session.audio_blob_size_bytes or 0) > 0 or session.assembled_object_key),
+            )
+        )
+    return items
 
 
 @router.get("/memories/search", response_model=MemorySearchResponse)
