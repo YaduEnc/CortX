@@ -34,7 +34,8 @@ class Settings(BaseSettings):
     whisper_device: str = "cpu"
 
     lmstudio_base_url: str = "http://host.docker.internal:1234/v1"
-    lmstudio_model: str = "local-model"
+    lmstudio_model: str = "dolphin-3.0-llama-3.1-8b"
+    lmstudio_embedding_model: str = "nomic-embed-text-v1.5"
     lmstudio_api_key: str | None = None
     lmstudio_timeout_seconds: int = 45
     lmstudio_temperature: float = 0.0

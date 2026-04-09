@@ -1,3 +1,4 @@
+import logging
 from typing import List, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -7,6 +8,8 @@ from app.models.transcript import Transcript
 from app.services.vector_store import get_vector_store
 from app.services.embeddings import get_embeddings
 from app.services.assistant_llm import get_settings, requests, AssistantLLMError
+
+logger = logging.getLogger(__name__)
 
 def query_memories_semantically(
     db: Session,
@@ -51,6 +54,10 @@ def query_memories_semantically(
     settings = get_settings()
     url = settings.lmstudio_base_url.rstrip("/") + "/chat/completions"
     
+    headers = {"Content-Type": "application/json"}
+    if settings.lmstudio_api_key:
+        headers["Authorization"] = f"Bearer {settings.lmstudio_api_key}"
+    
     system_prompt = (
         "You are CortX, a founder's second mind. Use the provided conversation snippets to answer the user's question accurately. "
         "If the answer isn't in the snippets, say you don't know based on the recorded memories. "
@@ -67,6 +74,7 @@ def query_memories_semantically(
     try:
         response = requests.post(
             url,
+            headers=headers,
             json={
                 "model": settings.lmstudio_model,
                 "messages": [
@@ -80,7 +88,12 @@ def query_memories_semantically(
         response.raise_for_status()
         answer = response.json()["choices"][0]["message"]["content"]
     except Exception as exc:
-        answer = f"I found some relevant snippets, but I couldn't formulate a summary right now. Here are the matches: \n" + "\n".join([s["text"] for s in sources[:2]])
+        logger.warning("Semantic search LLM call failed for user=%s query=%s: %s", user_id, query[:80], exc)
+        snippet_texts = [s.get("text") or "Related Memory" for s in sources[:2]]
+        answer = (
+            "I found some relevant snippets, but I couldn't formulate a summary right now. "
+            "Here are the matches:\n" + "\n".join(snippet_texts)
+        )
         
     return {
         "answer": answer.strip(),

@@ -1,4 +1,5 @@
 import logging
+from functools import lru_cache
 from typing import List, Dict, Any, Optional
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
@@ -98,10 +99,6 @@ class VectorStore:
         except Exception as exc:
             raise VectorStoreError(f"Failed to search Qdrant: {exc}") from exc
 
-_vector_store = None
-
+@lru_cache(maxsize=1)
 def get_vector_store() -> VectorStore:
-    global _vector_store
-    if _vector_store is None:
-        _vector_store = VectorStore()
-    return _vector_store
+    return VectorStore()

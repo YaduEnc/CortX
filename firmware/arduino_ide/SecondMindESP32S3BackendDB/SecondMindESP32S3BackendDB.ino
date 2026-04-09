@@ -40,39 +40,37 @@
 // ---------------------------------------------------------------------
 // USER CONFIG
 // ---------------------------------------------------------------------
-const char* WIFI_SSID     = "bappahive";
+const char* WIFI_SSID = "bappahive";
 const char* WIFI_PASSWORD = "knocknock";
 
-const char* API_BASE_URL  = "https://hamza.yaduraj.me/v1";
-const char* DEVICE_CODE   = "shashwat";
+const char* API_BASE_URL = "https://hamza.yaduraj.me/v1";
+const char* DEVICE_CODE = "shashwat";
 const char* DEVICE_SECRET = "1234567890";
 const char* DEVICE_BLE_NAME = "Yaduraj";
 
-const int SAMPLE_RATE    = 16000;
-const int CHANNELS       = 1;
-const int BITS           = 16;
+const int SAMPLE_RATE = 16000;
+const int CHANNELS = 1;
+const int BITS = 16;
 const int TARGET_CHUNK_SECONDS = 4;
 
-// Keep chunk payloads comfortably below the backend cap. Large HTTPS writes
-// around 256 KB were tripping HTTPC_ERROR_SEND_PAYLOAD_FAILED on ESP32-S3.
 const int BACKEND_MAX_CHUNK_BYTES = 128000;
 const int PCM_BYTES_PER_SECOND = SAMPLE_RATE * CHANNELS * (BITS / 8);
 const int CHUNK_BYTES = (TARGET_CHUNK_SECONDS * PCM_BYTES_PER_SECOND <= BACKEND_MAX_CHUNK_BYTES)
-                        ? (TARGET_CHUNK_SECONDS * PCM_BYTES_PER_SECOND)
-                        : BACKEND_MAX_CHUNK_BYTES;
+                          ? (TARGET_CHUNK_SECONDS * PCM_BYTES_PER_SECOND)
+                          : BACKEND_MAX_CHUNK_BYTES;
 const int CHUNK_SECONDS = CHUNK_BYTES / PCM_BYTES_PER_SECOND;
 const uint32_t CHUNK_MS = static_cast<uint32_t>((static_cast<uint64_t>(CHUNK_BYTES) * 1000ULL) / PCM_BYTES_PER_SECOND);
 
 const bool AUTO_STREAM_DEFAULT = false;
 const bool AUTO_ROLLING_FINALIZE = false;
 const uint32_t AUTO_FINALIZE_AFTER_CHUNKS = 4;  // auto-send one file every ~16s with current chunk size
-const uint32_t PAIR_MODE_WINDOW_MS = 300000;  // 5 min
+const uint32_t PAIR_MODE_WINDOW_MS = 300000;    // 5 min
 const uint32_t PAIR_STATUS_SYNC_INTERVAL_MS = 30000;
-#define PAIR_BUTTON_PIN -1               // set GPIO if using hardware button
+#define PAIR_BUTTON_PIN -1  // set GPIO if using hardware button
 const uint32_t LONG_PRESS_MS = 5000;
 
 // XIAO ESP32S3 Sense PDM mic pins
-#define MIC_CLK  42
+#define MIC_CLK 42
 #define MIC_DATA 41
 
 // BLE UUIDs (must match app)
@@ -231,37 +229,49 @@ bool ensureWiFi() {
   wl_status_t st = WiFi.status();
   if (st == WL_CONNECTED) return true;
 
-  if (st == WL_IDLE_STATUS) {
-    // A connection attempt is already in progress; do not call begin() again.
-    for (int i = 0; i < 8; i++) {
-      delay(250);
-      if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\n[NET] Connected: " + WiFi.localIP().toString());
-        return true;
-      }
+  // Check if we are in a transition state (already trying to connect)
+  if (st == WL_IDLE_STATUS || st == WL_DISCONNECTED) {
+    static uint32_t lastCheckMs = 0;
+    if (millis() - lastCheckMs < 500) return false; // Don't log too fast
+    lastCheckMs = millis();
+
+    // Give it more time to connect if we just started
+    if (g_lastWifiBeginMs != 0 && (millis() - g_lastWifiBeginMs) < 15000) {
+      // Just wait and yield
+      return false;
     }
-    return false;
   }
 
   const uint32_t now = millis();
-  if (g_lastWifiBeginMs != 0 && (now - g_lastWifiBeginMs) < 10000) {
+  // Don't spam WiFi.begin - wait at least 20 seconds between hard retries
+  if (g_lastWifiBeginMs != 0 && (now - g_lastWifiBeginMs) < 20000) {
     return false;
   }
-  g_lastWifiBeginMs = now;
+  
+  // Force a disconnect if we were stuck in a weird state
+  if (st != WL_CONNECTED && g_lastWifiBeginMs != 0) {
+    WiFi.disconnect();
+    delay(100);
+  }
 
-  Serial.print("[NET] Connecting");
+  g_lastWifiBeginMs = now;
+  Serial.printf("\n[NET] Connecting to %s ", WIFI_SSID);
+  
+  // Use persistent config for faster reconnects
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-  for (int i = 0; i < 40; i++) {
+  for (int i = 0; i < 30; i++) {
     delay(500);
     Serial.print('.');
     if (WiFi.status() == WL_CONNECTED) {
       Serial.printf("\n[NET] Connected: %s (RSSI: %d dBm)\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
       return true;
     }
+    // Yield to other tasks
+    vTaskDelay(1);
   }
 
-  Serial.println("\n[NET] Connect failed");
+  Serial.println("\n[NET] Connect failed - will retry in background");
   return false;
 }
 
@@ -281,11 +291,11 @@ bool initMic() {
   }
 
   i2s_pdm_rx_config_t pdm_rx_cfg = {
-    .clk_cfg  = I2S_PDM_RX_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
+    .clk_cfg = I2S_PDM_RX_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
     .slot_cfg = I2S_PDM_RX_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
     .gpio_cfg = {
-      .clk  = (gpio_num_t)MIC_CLK,
-      .din  = (gpio_num_t)MIC_DATA,
+      .clk = (gpio_num_t)MIC_CLK,
+      .din = (gpio_num_t)MIC_DATA,
       .invert_flags = { .clk_inv = false },
     },
   };
@@ -358,17 +368,17 @@ bool authDevice() {
   String payload;
   serializeJson(req, payload);
 
-    WiFiClientSecure client;
-    client.setInsecure();
+  WiFiClientSecure client;
+  client.setInsecure();
 
 
-    HTTPClient http;
-    String url = apiUrl("/device/auth");
-    if (!http.begin(client, url)) {
-      Serial.println("[AUTH] http.begin failed");
-      return false;
-    }
-    http.setTimeout(30000); // 30s for hotspot stability
+  HTTPClient http;
+  String url = apiUrl("/device/auth");
+  if (!http.begin(client, url)) {
+    Serial.println("[AUTH] http.begin failed");
+    return false;
+  }
+  http.setTimeout(30000);  // 30s for hotspot stability
   http.addHeader("Content-Type", "application/json");
 
   int code = http.POST(payload);
@@ -507,7 +517,7 @@ bool startCaptureSession(String& outSessionId) {
       return false;
     }
 
-    http.setTimeout(30000); // 30s timeout for session starts
+    http.setTimeout(30000);  // 30s timeout for session starts
     http.addHeader("Authorization", "Bearer " + token);
     http.addHeader("Content-Type", "application/json");
 
@@ -519,30 +529,30 @@ bool startCaptureSession(String& outSessionId) {
 
   int code = 0;
   String resp;
-  
+
   // Retry loop for the first session start to handle WiFi handshake jitter
   for (int retry = 0; retry < 3; retry++) {
     if (!doStart(g_deviceJwt, resp, code)) {
       if (retry < 2) {
         Serial.printf("[SESSION] start attempt %d failed; breathing...\n", retry + 1);
-        delay(1500); 
+        delay(1500);
         continue;
       }
       return false;
     }
-    
+
     if (code == 401) {
       if (!authDevice()) return false;
       if (!doStart(g_deviceJwt, resp, code)) return false;
     }
-    
+
     if (code == -1) {
-       Serial.println("[SESSION] HTTP -1 detected; forcing network reset...");
-       WiFi.disconnect();
-       delay(2000);
-       ensureWiFi();
-       delay(1000);
-       continue;
+      Serial.println("[SESSION] HTTP -1 detected; forcing network reset...");
+      WiFi.disconnect();
+      delay(2000);
+      ensureWiFi();
+      delay(1000);
+      continue;
     }
     break;
   }
@@ -860,21 +870,21 @@ void setupBle() {
   g_pairService = g_bleServer->createService(PAIR_SERVICE_UUID);
 
   g_deviceInfoChar = g_pairService->createCharacteristic(
-      DEVICE_INFO_CHAR_UUID,
-      BLECharacteristic::PROPERTY_READ);
+    DEVICE_INFO_CHAR_UUID,
+    BLECharacteristic::PROPERTY_READ);
 
   g_pairNonceChar = g_pairService->createCharacteristic(
-      PAIR_NONCE_CHAR_UUID,
-      BLECharacteristic::PROPERTY_READ);
+    PAIR_NONCE_CHAR_UUID,
+    BLECharacteristic::PROPERTY_READ);
 
   g_pairTokenChar = g_pairService->createCharacteristic(
-      PAIR_TOKEN_CHAR_UUID,
-      BLECharacteristic::PROPERTY_WRITE);
+    PAIR_TOKEN_CHAR_UUID,
+    BLECharacteristic::PROPERTY_WRITE);
   g_pairTokenChar->setCallbacks(new PairTokenCallbacks());
 
   g_pairStatusChar = g_pairService->createCharacteristic(
-      PAIR_STATUS_CHAR_UUID,
-      BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
+    PAIR_STATUS_CHAR_UUID,
+    BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
   g_pairStatusChar->addDescriptor(new BLE2902());
 
   updateDeviceInfoChar();
@@ -1031,7 +1041,7 @@ bool runContinuousChunkOnce() {
   // Start backend capture session only when first chunk is actually ready,
   // so aborted first-chunk attempts do not leave empty sessions server-side.
   if (g_activeSessionId.isEmpty()) {
-    delay(200); // small grace period
+    delay(200);  // small grace period
     String sid;
     if (!startCaptureSession(sid)) {
       xSemaphoreGive(sem);
@@ -1042,7 +1052,7 @@ bool runContinuousChunkOnce() {
     g_uploadedChunksInSession = 0;
   }
 
-  // Index must be captured AFTER potential session reset to avoid stale non-zero 
+  // Index must be captured AFTER potential session reset to avoid stale non-zero
   // index on the first chunk of a new session.
   const uint32_t idx = g_nextChunkIndex;
   const uint32_t startMs = idx * CHUNK_MS;
@@ -1103,7 +1113,7 @@ void processSerialCommand(char cmd, bool allowImmediateRun) {
       } else {
         Serial.println("[REC] STARTING continuous recording...");
         g_autoStream = true;
-        syncPairingStateWithBackend(true); 
+        syncPairingStateWithBackend(true);
       }
       break;
     case 'p':
@@ -1296,3 +1306,4 @@ void loop() {
     delay(800);
   }
 }
+

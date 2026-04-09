@@ -160,9 +160,9 @@ def extract_assistant_payload(transcript_text: str, transcript_language: str | N
     )
 
     user_prompt = (
-        f"Transcript language hint: {transcript_language or 'unknown'}\\n"
-        "Extract actionable assistant output from this transcript.\\n"
-        "Transcript:\\n"
+        f"Transcript language hint: {transcript_language or 'unknown'}\n"
+        "Extract actionable assistant output from this transcript.\n"
+        "Transcript:\n"
         f"{transcript_text}"
     )
 

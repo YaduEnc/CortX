@@ -14,7 +14,7 @@ def get_embeddings(text: str) -> List[float]:
         headers["Authorization"] = f"Bearer {settings.lmstudio_api_key}"
         
     payload = {
-        "model": settings.lmstudio_model,
+        "model": settings.lmstudio_embedding_model,
         "input": text
     }
     
