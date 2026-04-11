@@ -419,20 +419,41 @@ function PipelineSection() {
   const isInView = useInView(ref, { once: true, margin: "-100px" });
 
   const steps = [
-    { label: "Capture", detail: "ESP32-S3 wearable tags audio via BLE.", icon: "⬡" },
-    { label: "Stream", detail: "Real-time Opus/WAV 16kHz pipeline.", icon: "⬢" },
-    { label: "Transcribe", detail: "Whisper Large-v3 turbo-speed STT.", icon: "⬡" },
-    { label: "Distill", detail: "LLM task & insight extraction.", icon: "⬢" },
-    { label: "Connect", detail: "Semantic linking in Vector DB.", icon: "⬡" },
+    { 
+      label: "Capture", 
+      detail: "Hardware-accelerated audio ingestion.", 
+      longDetail: "The ESP32-S3 wearable captures raw audio and handles local VAD (Voice Activity Detection), ensuring only meaningful speech is transmitted.",
+      icon: "⬡" 
+    },
+    { 
+      label: "Stream & Auth", 
+      detail: "Zero-latency secure transmission.", 
+      longDetail: "Audio packets are streamed via BLE 5.0 to your mobile device, authenticated, and relayed to the CortX API via secure WebSockets.",
+      icon: "⬢" 
+    },
+    { 
+      label: "Transcribe", 
+      detail: "Whisper Large-v3 processing.", 
+      longDetail: "GPU-accelerated inference converts speech to text in real-time, achieving near-perfect accuracy even in noisy environments.",
+      icon: "⬡" 
+    },
+    { 
+      label: "Distill & Map", 
+      detail: "LLM-driven semantic routing.", 
+      longDetail: "A local LLM analyzes intent, extracts action items, identifies named entities, and prepares the data for graph insertion.",
+      icon: "⬢" 
+    },
+    { 
+      label: "Synthesize", 
+      detail: "Building the personal knowledge graph.", 
+      longDetail: "Extracted concepts are embedded via Nomic-Embed and stored in Qdrant, linking new thoughts to your existing memory matrix.",
+      icon: "⬡" 
+    },
   ];
 
-  const trail = useTrail(steps.length, {
-    opacity: isInView ? 1 : 0,
-    y: isInView ? 0 : 20,
-    config: springConfig.stiff,
-  });
+  const [activeStep, setActiveStep] = useState<number | null>(null);
 
-  // Waveform animation
+  // Waveform constants
   const wavePoints = [10, 30, 15, 45, 20, 55, 10, 35, 25, 50, 20];
 
   return (
@@ -440,77 +461,117 @@ function PipelineSection() {
       ref={ref}
       style={{
         background: "#000",
-        padding: "140px 2rem",
+        padding: "160px 2rem",
         borderTop: "1px solid rgba(255,255,255,0.06)",
         position: "relative",
         overflow: "hidden",
       }}
     >
-      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        <div style={{ textAlign: "center", marginBottom: 80 }}>
+      <div style={{ maxWidth: 1000, margin: "0 auto", position: "relative" }}>
+        
+        {/* Header */}
+        <div style={{ textAlign: "center", marginBottom: 120 }}>
           <motion.p
             initial={{ opacity: 0 }}
             animate={isInView ? { opacity: 1 } : {}}
-            style={{ fontSize: 12, letterSpacing: "0.2em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", marginBottom: 16 }}
+            transition={{ duration: 1 }}
+            style={{ fontSize: 12, letterSpacing: "0.25em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", marginBottom: 20 }}
           >
-            The Cognitive Engine
+            The Pipeline
           </motion.p>
           <motion.h2
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={isInView ? { opacity: 1, scale: 1 } : {}}
-            style={{ fontSize: "clamp(32px, 5vw, 64px)", fontWeight: 900, letterSpacing: "-0.04em", color: "#fff" }}
+            initial={{ opacity: 0, y: 20 }}
+            animate={isInView ? { opacity: 1, y: 0 } : {}}
+            transition={{ duration: 0.8, delay: 0.1 }}
+            style={{ fontSize: "clamp(40px, 6vw, 72px)", fontWeight: 900, letterSpacing: "-0.04em", color: "#fff", lineHeight: 1.05 }}
           >
-            Speech to Structure.
+            Raw speech to
+            <br />
+            structured intellect.
           </motion.h2>
         </div>
 
-        {/* Dynamic Waveform Visualization */}
-        <div style={{ position: "relative", height: 120, marginBottom: 60, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+        {/* Dynamic Waveform Header */}
+        <div style={{ position: "relative", height: 80, marginBottom: -40, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, zIndex: 0 }}>
           {wavePoints.map((h, i) => (
             <motion.div
               key={i}
               initial={{ height: 4 }}
-              animate={isInView ? { height: [h, h * 0.6, h] } : {}}
-              transition={{ repeat: Infinity, duration: 1 + i * 0.1, ease: "easeInOut" }}
+              animate={isInView ? { height: [h, h * 0.4, h] } : {}}
+              transition={{ repeat: Infinity, duration: 1.5 + i * 0.1, ease: "easeInOut" }}
               style={{
-                width: 4,
+                width: 3,
                 background: "linear-gradient(to bottom, transparent, #fff, transparent)",
                 borderRadius: 2,
-                opacity: 0.3,
+                opacity: 0.15,
               }}
             />
           ))}
-          <div style={{ position: "absolute", width: "100%", height: "1px", background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent)", top: "50%" }} />
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 1 }}>
-          {trail.map((style: any, i: number) => (
-            <animated.div
-              key={i}
-              style={{
-                ...style,
-                background: "rgba(255,255,255,0.02)",
-                border: "1px solid rgba(255,255,255,0.05)",
-                padding: "40px 24px",
-                position: "relative",
-                transition: "background 0.3s",
-              }}
-              onMouseEnter={(e: any) => e.currentTarget.style.background = "rgba(255,255,255,0.05)"}
-              onMouseLeave={(e: any) => e.currentTarget.style.background = "rgba(255,255,255,0.02)"}
-            >
-              <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.2)", marginBottom: 20 }}>0{i+1}</div>
-              <div style={{ fontSize: 24, marginBottom: 12, color: "#fff" }}>{steps[i].icon}</div>
-              <h3 style={{ fontSize: 17, fontWeight: 700, color: "#fff", marginBottom: 8, letterSpacing: "-0.02em" }}>{steps[i].label}</h3>
-              <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", lineHeight: 1.6 }}>{steps[i].detail}</p>
-              
-              {i < steps.length - 1 && (
-                <div style={{ position: "absolute", right: -12, top: "50%", transform: "translateY(-50%)", zIndex: 5, color: "rgba(255,255,255,0.1)", fontSize: 24 }}>
-                   ›
-                </div>
-              )}
-            </animated.div>
-          ))}
+        {/* Vertical Timeline Layout */}
+        <div style={{ position: "relative", marginTop: 80 }}>
+          {/* Center Line */}
+          <motion.div 
+            initial={{ height: 0 }}
+            animate={isInView ? { height: "100%" } : {}}
+            transition={{ duration: 2, ease: "easeInOut" }}
+            style={{ position: "absolute", left: "50%", top: 0, width: 1, background: "linear-gradient(to bottom, transparent, rgba(255,255,255,0.1) 10%, rgba(255,255,255,0.1) 90%, transparent)", transform: "translateX(-50%)", zIndex: 0 }}
+          />
+
+          {steps.map((step, i) => {
+            const isLeft = i % 2 === 0;
+            return (
+              <div key={i} style={{ display: "flex", justifyContent: isLeft ? "flex-start" : "flex-end", width: "100%", marginBottom: i === steps.length - 1 ? 0 : 80, position: "relative" }}>
+                
+                {/* Center Node */}
+                <motion.div 
+                  initial={{ scale: 0, opacity: 0 }}
+                  animate={isInView ? { scale: 1, opacity: 1 } : {}}
+                  transition={{ delay: 0.5 + i * 0.2, duration: 0.5 }}
+                  style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)", width: 16, height: 16, borderRadius: "50%", background: "#000", border: activeStep === i ? "2px solid #fff" : "2px solid rgba(255,255,255,0.2)", zIndex: 1, display: "flex", alignItems: "center", justifyContent: "center", transition: "border 0.3s" }}
+                >
+                  <motion.div 
+                    animate={activeStep === i ? { scale: [1, 1.5, 1], opacity: [1, 0.5, 1] } : {}} 
+                    transition={{ repeat: Infinity, duration: 2 }}
+                    style={{ width: 4, height: 4, borderRadius: "50%", background: activeStep === i ? "#fff" : "transparent" }}
+                  />
+                </motion.div>
+
+                {/* Content Card */}
+                <motion.div
+                  initial={{ opacity: 0, x: isLeft ? 50 : -50 }}
+                  animate={isInView ? { opacity: 1, x: 0 } : {}}
+                  transition={{ delay: 0.4 + i * 0.15, duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+                  onMouseEnter={() => setActiveStep(i)}
+                  onMouseLeave={() => setActiveStep(null)}
+                  style={{
+                    width: "calc(50% - 60px)",
+                    background: activeStep === i ? "rgba(255,255,255,0.03)" : "rgba(255,255,255,0.01)",
+                    border: activeStep === i ? "1px solid rgba(255,255,255,0.1)" : "1px solid rgba(255,255,255,0.03)",
+                    padding: 40,
+                    borderRadius: 16,
+                    textAlign: isLeft ? "right" : "left",
+                    cursor: "pointer",
+                    transition: "all 0.4s cubic-bezier(0.16, 1, 0.3, 1)",
+                    transform: activeStep === i ? (isLeft ? "translateX(-10px)" : "translateX(10px)") : "translateX(0)",
+                  }}
+                >
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.2)", marginBottom: 12, letterSpacing: "0.1em" }}>STEP 0{i+1}</div>
+                  <h3 style={{ fontSize: 24, fontWeight: 700, color: "#fff", marginBottom: 12, letterSpacing: "-0.02em" }}>{step.label}</h3>
+                  <p style={{ fontSize: 14, color: "rgba(255,255,255,0.6)", lineHeight: 1.5, marginBottom: activeStep === i ? 20 : 0, transition: "margin 0.3s" }}>{step.detail}</p>
+                  
+                  {/* Expandable Detail */}
+                  <div style={{ overflow: "hidden", height: activeStep === i ? "auto" : 0, opacity: activeStep === i ? 1 : 0, transition: "all 0.3s" }}>
+                    <div style={{ height: 1, background: "rgba(255,255,255,0.1)", marginBottom: 20 }} />
+                    <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", lineHeight: 1.6 }}>{step.longDetail}</p>
+                  </div>
+                </motion.div>
+              </div>
+            );
+          })}
         </div>
+
       </div>
     </section>
   );
@@ -644,18 +705,18 @@ function FeaturesSection() {
   const isInView = useInView(ref, { once: true, margin: "-80px" });
 
   const features = [
-    { title: "Knowledge Graphs", desc: "Connects thoughts over time. See how your ideas evolve and relate.", tag: "Memory" },
-    { title: "Smart Reminders", desc: "Detects tasks automatically. \"Finish the report by Thursday\" → calendar entry.", tag: "Action" },
-    { title: "Daily Intelligence", desc: "A condensed summary of your messy talks and decisions every evening.", tag: "Insight" },
-    { title: "Semantic Search", desc: "Ask \"What did I discuss with the investor?\" and get an actual answer.", tag: "Recall" },
-    { title: "Privacy First", desc: "No human review. Full encryption in transit. Data deleted after processing.", tag: "Trust" },
-    { title: "Team Memory", desc: "Shared cognitive layers for meetings. Insights across your entire team.", tag: "Collab" },
+    { title: "Knowledge Graphs", desc: "Connects thoughts over time. See how your ideas evolve and relate across different recordings.", icon: "⎈" },
+    { title: "Smart Reminders", desc: "Detects tasks automatically. \"Finish the report by Thursday\" becomes a calendar entry.", icon: "⏱" },
+    { title: "Daily Intelligence", desc: "A condensed executive summary of your messy talks and decisions, delivered every evening.", icon: "✧" },
+    { title: "Semantic Search", desc: "Ask \"What did I discuss with the investor?\" and get an actual answer based on intent.", icon: "⌕" },
+    { title: "Privacy First", desc: "No human review. Full AES-256 encryption in transit. Data deleted immediately after processing.", icon: "⚿" },
+    { title: "Team Memory", desc: "Shared cognitive layers for meetings. Query insights across your entire team's captured audio.", icon: "⑂" },
   ];
 
   const trail = useTrail(features.length, {
     opacity: isInView ? 1 : 0,
-    y: isInView ? 0 : 30,
-    config: { tension: 160, friction: 20 },
+    scale: isInView ? 1 : 0.95,
+    config: { tension: 120, friction: 14 },
     delay: isInView ? 100 : 0,
   });
 
@@ -664,65 +725,98 @@ function FeaturesSection() {
       ref={ref}
       style={{
         background: "#0a0a0a",
-        padding: "120px 2rem",
+        padding: "160px 2rem",
         borderTop: "1px solid rgba(255,255,255,0.06)",
+        position: "relative",
       }}
     >
-      <div style={{ maxWidth: 1000, margin: "0 auto" }}>
+      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
           transition={{ duration: 0.6 }}
-          style={{ marginBottom: 60 }}
+          style={{ marginBottom: 80, textAlign: "center" }}
         >
-          <p style={{ fontSize: 11, letterSpacing: "0.15em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)", marginBottom: 12 }}>
-            Features
+          <p style={{ fontSize: 12, letterSpacing: "0.2em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", marginBottom: 16 }}>
+            Core Capabilities
           </p>
-          <h2 style={{ fontSize: "clamp(28px, 4vw, 48px)", fontWeight: 800, letterSpacing: "-0.04em", color: "#fff", maxWidth: 500 }}>
-            Intelligence, not just storage.
+          <h2 style={{ fontSize: "clamp(32px, 5vw, 56px)", fontWeight: 900, letterSpacing: "-0.04em", color: "#fff", maxWidth: 600, margin: "0 auto", lineHeight: 1.1 }}>
+            Intelligence,
+            <br />
+            not just storage.
           </h2>
         </motion.div>
 
+        {/* Masonry / Grid layout */}
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-            gap: 1,
-            background: "rgba(255,255,255,0.06)",
-            border: "1px solid rgba(255,255,255,0.06)",
+            gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+            gap: 20,
+            position: "relative",
           }}
         >
-          {trail.map((style: any, i: number) => (
-            <animated.div key={i} style={style}>
-              <motion.div
-                whileHover={{ background: "rgba(255,255,255,0.04)" }}
-                style={{ padding: 28, background: "#0a0a0a", transition: "background 0.2s", cursor: "default" }}
+          {trail.map((style: any, i: number) => {
+            const isFeatured = i === 0 || i === 3;
+            return (
+              <animated.div 
+                key={i} 
+                style={{
+                  ...style,
+                  gridColumn: isFeatured ? "span 2" : "span 1",
+                  '@media (max-width: 768px)': {
+                    gridColumn: "span 1",
+                  }
+                } as any}
               >
-                <div
-                  style={{
-                    display: "inline-block",
-                    fontSize: 10,
-                    fontWeight: 600,
-                    letterSpacing: "0.1em",
-                    textTransform: "uppercase",
-                    color: "rgba(255,255,255,0.35)",
-                    border: "1px solid rgba(255,255,255,0.1)",
-                    borderRadius: 4,
-                    padding: "3px 8px",
-                    marginBottom: 16,
+                <motion.div
+                  whileHover={{ y: -5, boxShadow: "0 20px 40px rgba(0,0,0,0.5)" }}
+                  style={{ 
+                    height: "100%",
+                    padding: 40, 
+                    background: "rgba(255,255,255,0.02)", 
+                    border: "1px solid rgba(255,255,255,0.05)",
+                    borderRadius: 24,
+                    transition: "all 0.3s ease",
+                    display: "flex",
+                    flexDirection: "column",
+                    justifyContent: "space-between",
+                    position: "relative",
+                    overflow: "hidden"
                   }}
                 >
-                  {features[i].tag}
-                </div>
-                <p style={{ fontSize: 16, fontWeight: 700, color: "#fff", marginBottom: 8, letterSpacing: "-0.02em" }}>
-                  {features[i].title}
-                </p>
-                <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", lineHeight: 1.65 }}>
-                  {features[i].desc}
-                </p>
-              </motion.div>
-            </animated.div>
-          ))}
+                  {/* Subtle gradient glow inside card */}
+                  <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "50%", background: "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, transparent 100%)", pointerEvents: "none" }} />
+                  
+                  <div>
+                    <div
+                      style={{
+                        fontSize: 28,
+                        color: "#fff",
+                        marginBottom: 24,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 48,
+                        height: 48,
+                        background: "rgba(255,255,255,0.08)",
+                        borderRadius: 12,
+                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.1)"
+                      }}
+                    >
+                      {features[i].icon}
+                    </div>
+                    <h3 style={{ fontSize: 22, fontWeight: 700, color: "#fff", marginBottom: 12, letterSpacing: "-0.02em" }}>
+                      {features[i].title}
+                    </h3>
+                  </div>
+                  <p style={{ fontSize: 15, color: "rgba(255,255,255,0.5)", lineHeight: 1.6, marginTop: "auto" }}>
+                    {features[i].desc}
+                  </p>
+                </motion.div>
+              </animated.div>
+            );
+          })}
         </div>
       </div>
     </section>
