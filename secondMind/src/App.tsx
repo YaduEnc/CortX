@@ -50,9 +50,14 @@ function Nav() {
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
         transition={{ duration: 0.6 }}
-        style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}
+        style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }}
         onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
       >
+        <img 
+          src="/logo.png" 
+          alt="SecondMind Logo" 
+          style={{ height: 28, width: "auto", objectFit: "contain" }} 
+        />
         <span
           style={{
             fontWeight: 800,
@@ -608,31 +613,17 @@ function DeviceSection() {
           {/* Blueprint Grid */}
           <div style={{ position: "absolute", inset: 0, opacity: 0.1, backgroundImage: "radial-gradient(rgba(255,255,255,0.2) 1px, transparent 1px)", backgroundSize: "20px 20px" }} />
 
-          {/* Main Device Body (SVG) */}
+          {/* Main Device Body (Image) */}
           <motion.div
             animate={isInView ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.9 }}
             transition={{ duration: 1.2, ease: [0.22, 1, 0.36, 1] }}
-            style={{ width: 280, height: 280, position: "relative" }}
+            style={{ width: 200, height: 400, position: "relative", display: "flex", justifyContent: "center", alignItems: "center" }}
           >
-            <svg viewBox="0 0 200 200" style={{ width: "100%", height: "100%", filter: "drop-shadow(0 0 30px rgba(255,255,255,0.05))" }}>
-              <motion.rect 
-                x="40" y="40" width="120" height="120" rx="20" 
-                fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="0.5" 
-                initial={{ pathLength: 0 }}
-                animate={isInView ? { pathLength: 1 } : {}}
-                transition={{ duration: 2 }}
-              />
-              <motion.circle 
-                cx="100" cy="100" r="40" 
-                fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="0.5" 
-                initial={{ pathLength: 0 }}
-                animate={isInView ? { pathLength: 1 } : {}}
-                transition={{ duration: 2, delay: 0.5 }}
-              />
-              {/* Internal components logic */}
-              <rect x="70" y="70" width="15" height="15" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.2)" strokeWidth="0.2" />
-              <rect x="115" y="70" width="15" height="15" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.2)" strokeWidth="0.2" />
-            </svg>
+            <img 
+              src="/deviceimage.jpeg" 
+              alt="CortX Wearable" 
+              style={{ width: "100%", height: "100%", objectFit: "contain", filter: "invert(1) drop-shadow(0 0 30px rgba(255,255,255,0.1))", mixBlendMode: "screen", opacity: 0.9 }} 
+            />
 
             {/* Hotspots */}
             {nodes.map((node, i) => (
@@ -1054,29 +1045,74 @@ function Footer() {
     <footer
       style={{
         background: "#000",
-        borderTop: "1px solid rgba(255,255,255,0.06)",
-        padding: "32px 2.5rem",
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        flexWrap: "wrap",
-        gap: 16,
+        borderTop: "1px solid rgba(255,255,255,0.08)",
+        padding: "80px 2.5rem 40px",
+        color: "#fff",
+        position: "relative",
+        overflow: "hidden"
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontWeight: 800, fontSize: 16, letterSpacing: "-0.04em", color: "#fff" }}>SecondMind</span>
+      <div style={{ maxWidth: 1100, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 60 }}>
+        
+        {/* Brand & Mission */}
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+            <img 
+              src="/logo.png" 
+              alt="SecondMind Logo" 
+              style={{ height: 32, width: "auto", objectFit: "contain" }} 
+            />
+            <span style={{ fontWeight: 800, fontSize: 22, letterSpacing: "-0.04em", color: "#fff" }}>SecondMind</span>
+          </div>
+          <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", lineHeight: 1.6, marginBottom: 24, paddingRight: 40 }}>
+            Building the cognitive exoskeleton for the internet. Turning ephemeral thoughts into permanent intelligence.
+          </p>
+          <div style={{ alignItems: "center", gap: 10, padding: "8px 12px", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 100, display: "inline-flex" }}>
+            <motion.div animate={{ scale: [1, 1.2, 1], opacity: [0.6, 1, 0.6] }} transition={{ repeat: Infinity, duration: 2 }} style={{ width: 8, height: 8, borderRadius: "50%", background: "#4CAF50", boxShadow: "0 0 10px rgba(76, 175, 80, 0.5)" }} />
+            <span style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,0.6)", letterSpacing: "0.05em", textTransform: "uppercase" }}>API Operational</span>
+          </div>
+        </div>
+
+        {/* Tech & Legal Links */}
+        <div style={{ display: "flex", gap: 60 }}>
+          <div>
+            <h4 style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)", marginBottom: 20 }}>Technology</h4>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {["Architecture", "Security", "Open Source", "Whisper v3"].map(l => (
+                <a key={l} href="#" style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", transition: "color 0.2s" }} onMouseEnter={e => (e.target as HTMLElement).style.color = "#fff"} onMouseLeave={e => (e.target as HTMLElement).style.color = "rgba(255,255,255,0.5)"}>{l}</a>
+              ))}
+            </div>
+          </div>
+          <div>
+            <h4 style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)", marginBottom: 20 }}>Company</h4>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {["About", "Privacy Policy", "Terms of Service", "Contact"].map(l => (
+                <a key={l} href="#" style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", transition: "color 0.2s" }} onMouseEnter={e => (e.target as HTMLElement).style.color = "#fff"} onMouseLeave={e => (e.target as HTMLElement).style.color = "rgba(255,255,255,0.5)"}>{l}</a>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Social */}
+        <div>
+           <h4 style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)", marginBottom: 20 }}>Connect</h4>
+           <div style={{ display: "flex", gap: 16 }}>
+             {[
+               { name: "GitHub", icon: "⎇" },
+               { name: "Discord", icon: "⍾" },
+               { name: "X / Twitter", icon: "𝕏" }
+             ].map(s => (
+               <motion.a key={s.name} href="#" whileHover={{ y: -2, background: "rgba(255,255,255,0.1)" }} style={{ width: 40, height: 40, borderRadius: "50%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center", textDecoration: "none", color: "#fff", fontSize: 18 }}>
+                 {s.icon}
+               </motion.a>
+             ))}
+           </div>
+        </div>
       </div>
-      <p style={{ fontSize: 12, color: "rgba(255,255,255,0.2)" }}>© 2025 SecondMind. All rights reserved.</p>
-      <div style={{ display: "flex", gap: 24 }}>
-        {[
-          { name: "Privacy", href: "#" },
-          { name: "Terms", href: "#" },
-          { name: "Contact", href: "#" }
-        ].map((l) => (
-          <a key={l.name} href={l.href} style={{ fontSize: 12, color: "rgba(255,255,255,0.3)", transition: "color 0.2s" }} onMouseEnter={(e) => (e.target as HTMLElement).style.color = "#fff"} onMouseLeave={(e) => (e.target as HTMLElement).style.color = "rgba(255,255,255,0.3)"}>
-            {l.name}
-          </a>
-        ))}
+      
+      <div style={{ maxWidth: 1100, margin: "60px auto 0", paddingTop: 30, borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <p style={{ fontSize: 12, color: "rgba(255,255,255,0.3)" }}>© {new Date().getFullYear()} SecondMind. All rights reserved.</p>
+        <p style={{ fontSize: 12, color: "rgba(255,255,255,0.3)" }}>Designed for cognitive amplification.</p>
       </div>
     </footer>
   );
