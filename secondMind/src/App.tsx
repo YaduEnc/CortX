@@ -125,23 +125,48 @@ function Nav() {
   );
 }
 
+const CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&*+=-";
+
+function DecryptText({ text }: { text: string }) {
+  const [displayedText, setDisplayedText] = useState(text);
+
+  useEffect(() => {
+    let iteration = 0;
+    const interval = setInterval(() => {
+      setDisplayedText((prev) =>
+        prev
+          .split("")
+          .map((_, index) => {
+            if (index < iteration) return text[index];
+            return CHARACTERS[Math.floor(Math.random() * CHARACTERS.length)];
+          })
+          .join("")
+      );
+
+      if (iteration >= text.length) clearInterval(interval);
+      iteration += 1 / 2; // Speed of decipher
+    }, 40);
+
+    return () => clearInterval(interval);
+  }, [text]);
+
+  return <>{displayedText}</>;
+}
+
 function Hero() {
   const ref = useRef(null);
-  const { scrollYProgress } = useScroll({
-    target: ref,
-    offset: ["start start", "end start"],
-  });
+  const { scrollYProgress } = useScroll({ target: ref, offset: ["start start", "end start"] });
+  
   const bgY = useTransform(scrollYProgress, [0, 1], ["0%", "35%"]);
   const bgOpacity = useTransform(scrollYProgress, [0, 0.7], [1, 0]);
-  const contentY = useTransform(scrollYProgress, [0, 1], ["0%", "35%"]);
+  const contentY = useTransform(scrollYProgress, [0, 1], ["0%", "20%"]);
   const contentOpacity = useTransform(scrollYProgress, [0, 0.7], [1, 0]);
-  const contentScale = useTransform(scrollYProgress, [0, 0.8], [1, 0.92]);
 
-  const words = ["Think.", "Capture.", "Structure."];
+  const words = ["Think.", "Capture.", "Structure.", "Synthesize."];
   const [activeWord, setActiveWord] = useState(0);
 
   useEffect(() => {
-    const t = setInterval(() => setActiveWord((p) => (p + 1) % 3), 1800);
+    const t = setInterval(() => setActiveWord((p) => (p + 1) % words.length), 2500);
     return () => clearInterval(t);
   }, []);
 
@@ -157,168 +182,116 @@ function Hero() {
         position: "relative",
         overflow: "hidden",
         background: "#000",
+        paddingTop: "60px"
       }}
     >
-      {/* Grid background */}
-      <motion.div
-        style={{
-          position: "absolute",
-          inset: 0,
-          backgroundImage:
-            "linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px)",
-          backgroundSize: "60px 60px",
-          y: bgY,
-          opacity: bgOpacity,
-        }}
-      />
-      {/* Radial glow */}
-      <div
-        style={{
-          position: "absolute",
-          top: "20%",
-          left: "50%",
-          transform: "translateX(-50%)",
-          width: 600,
-          height: 600,
-          borderRadius: "50%",
-          background:
-            "radial-gradient(circle, rgba(255,255,255,0.06) 0%, transparent 70%)",
-          pointerEvents: "none",
-        }}
-      />
+      {/* Dynamic Data Streams */}
+      <motion.div style={{ position: "absolute", inset: 0, zIndex: 0, opacity: bgOpacity, pointerEvents: "none" }}>
+        {/* Vertical processing lines */}
+        {[...Array(6)].map((_, i) => (
+          <motion.div
+            key={`line-${i}`}
+            initial={{ y: "-100%" }}
+            animate={{ y: "100%" }}
+            transition={{ repeat: Infinity, duration: 8 + i * 2, ease: "linear", delay: i * 1.5 }}
+            style={{
+              position: "absolute",
+              left: `${15 + i * 14}%`,
+              width: 1,
+              height: "100vh",
+              background: "linear-gradient(to bottom, transparent, rgba(255,255,255,0.1), transparent)",
+            }}
+          />
+        ))}
+      </motion.div>
 
-      {/* Content */}
+      {/* Floating UI Data Cards (Parallax) */}
+      <motion.div style={{ position: "absolute", inset: 0, zIndex: 1, y: bgY, pointerEvents: "none", opacity: 0.6 }}>
+        {/* Card 1: JSON Data */}
+        <motion.div
+          animate={{ y: [0, -20, 0], rotate: [0, 2, 0] }}
+          transition={{ repeat: Infinity, duration: 6, ease: "easeInOut" }}
+          style={{ position: "absolute", top: "25%", left: "10%", background: "rgba(20,20,20,0.8)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 12, padding: 16, backdropFilter: "blur(10px)", width: 200 }}
+        >
+          <div style={{ fontSize: 9, color: "rgba(255,255,255,0.3)", fontFamily: "monospace", marginBottom: 8 }}>incoming_stream.json</div>
+          <div style={{ fontSize: 10, color: "#4CAF50", fontFamily: "monospace" }}>
+            &#123; "intent": "schedule", <br/> "entities": ["investor", "friday"] &#125;
+          </div>
+        </motion.div>
+
+        {/* Card 2: Audio Waveform */}
+        <motion.div
+          animate={{ y: [0, 30, 0], rotate: [0, -2, 0] }}
+          transition={{ repeat: Infinity, duration: 8, ease: "easeInOut", delay: 1 }}
+          style={{ position: "absolute", bottom: "30%", right: "12%", background: "rgba(20,20,20,0.8)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 12, padding: 16, backdropFilter: "blur(10px)", display: "flex", gap: 4, alignItems: "flex-end", height: 60 }}
+        >
+          {[...Array(12)].map((_, i) => (
+             <motion.div key={i} animate={{ height: ["20%", "100%", "20%"] }} transition={{ repeat: Infinity, duration: 1 + Math.random(), delay: Math.random() }} style={{ width: 4, background: "rgba(255,255,255,0.4)", borderRadius: 2 }} />
+          ))}
+        </motion.div>
+      </motion.div>
+
+      {/* Base Grid & Glow */}
+      <div style={{ position: "absolute", inset: 0, backgroundImage: "radial-gradient(ellipse at 50% 50%, rgba(255,255,255,0.07) 0%, transparent 60%)", pointerEvents: "none", zIndex: 0 }} />
+
+      {/* Hero Content */}
       <motion.div
-        style={{
-          position: "relative",
-          zIndex: 2,
-          textAlign: "center",
-          maxWidth: 800,
-          padding: "0 2rem",
-          y: contentY,
-          opacity: contentOpacity,
-          scale: contentScale,
-        }}
+        style={{ position: "relative", zIndex: 2, textAlign: "center", maxWidth: 840, padding: "0 2rem", y: contentY, opacity: contentOpacity }}
         initial={{ opacity: 0, y: 30 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
       >
+        <div style={{ display: "inline-block", background: "rgba(255,255,255,0.05)", padding: "6px 14px", borderRadius: 100, border: "1px solid rgba(255,255,255,0.1)", marginBottom: 24 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", color: "#fff", textTransform: "uppercase" }}>CortX Engine v1.0 Online</span>
+        </div>
 
-        {/* Headline */}
-        <h1
-          style={{
-            fontSize: "clamp(52px, 8vw, 96px)",
-            fontWeight: 900,
-            lineHeight: 1,
-            letterSpacing: "-0.04em",
-            marginBottom: 20,
-            color: "#fff",
-          }}
-        >
-          <AnimatePresence mode="wait">
-            <motion.span
-              key={activeWord}
-              initial={{ opacity: 0, y: 20, filter: "blur(8px)" }}
-              animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-              exit={{ opacity: 0, y: -20, filter: "blur(8px)" }}
-              transition={{ duration: 0.5 }}
-              style={{ display: "block" }}
-            >
-              {words[activeWord]}
-            </motion.span>
-          </AnimatePresence>
-          <span
-            style={{
-              display: "block",
-              color: "rgba(255,255,255,0.2)",
-              fontSize: "0.55em",
-              fontWeight: 300,
-              letterSpacing: "-0.01em",
-              marginTop: 8,
-            }}
-          >
-            Your thoughts. Structured.
+        <h1 style={{ fontSize: "clamp(48px, 8vw, 100px)", fontWeight: 900, lineHeight: 1.05, letterSpacing: "-0.04em", marginBottom: 20, color: "#fff" }}>
+          <div style={{ height: "1.1em", display: "flex", justifyContent: "center", alignItems: "center" }}>
+            <AnimatePresence mode="wait">
+              <motion.span
+                key={activeWord}
+                initial={{ opacity: 0, filter: "blur(10px)" }}
+                animate={{ opacity: 1, filter: "blur(0px)" }}
+                exit={{ opacity: 0, filter: "blur(10px)" }}
+                transition={{ duration: 0.4 }}
+              >
+                <DecryptText text={words[activeWord]} />
+              </motion.span>
+            </AnimatePresence>
+          </div>
+          <span style={{ display: "block", color: "rgba(255,255,255,0.2)", fontSize: "0.4em", fontWeight: 400, letterSpacing: "-0.01em", marginTop: 12 }}>
+             Unstructured chaos into structured intelligence.
           </span>
         </h1>
 
-        <p
-          style={{
-            fontSize: 18,
-            color: "rgba(255,255,255,0.5)",
-            lineHeight: 1.7,
-            maxWidth: 560,
-            margin: "0 auto 40px",
-            fontWeight: 300,
-          }}
-        >
-          A hardware-integrated ecosystem that captures unstructured thinking
-          and transforms it into actionable intelligence — in real time.
+        <p style={{ fontSize: "clamp(16px, 2vw, 18px)", color: "rgba(255,255,255,0.45)", lineHeight: 1.6, maxWidth: 580, margin: "0 auto 48px", fontWeight: 400 }}>
+          A hardware-integrated ecosystem that captures your ideas seamlessly and transforms them into an actionable, instantly severable knowledge graph.
         </p>
 
-        <div
-          style={{
-            display: "flex",
-            gap: 12,
-            justifyContent: "center",
-            flexWrap: "wrap",
-          }}
-        >
+        <div style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
           <motion.button
             onClick={() => document.getElementById("cta")?.scrollIntoView({ behavior: "smooth" })}
-            whileHover={{ scale: 1.04, boxShadow: "0 0 30px rgba(255,255,255,0.2)" }}
+            whileHover={{ scale: 1.04, boxShadow: "0 0 40px rgba(255,255,255,0.2)" }}
             whileTap={{ scale: 0.97 }}
-            style={{
-              background: "#fff",
-              color: "#000",
-              border: "none",
-              borderRadius: 8,
-              padding: "14px 32px",
-              fontSize: 15,
-              fontWeight: 700,
-              cursor: "pointer",
-              letterSpacing: "-0.02em",
-            }}
+            style={{ background: "#fff", color: "#000", border: "none", borderRadius: 12, padding: "16px 36px", fontSize: 15, fontWeight: 700, cursor: "pointer", letterSpacing: "-0.01em" }}
           >
-            Request early access →
+            Request early access
           </motion.button>
+          
           <motion.button
             onClick={() => document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" })}
-            whileHover={{ scale: 1.04, background: "rgba(255,255,255,0.08)" }}
-            style={{
-              background: "transparent",
-              color: "#fff",
-              border: "1px solid rgba(255,255,255,0.2)",
-              borderRadius: 8,
-              padding: "14px 32px",
-              fontSize: 15,
-              fontWeight: 400,
-              cursor: "pointer",
-              letterSpacing: "-0.02em",
-              transition: "background 0.2s",
-            }}
+            whileHover={{ scale: 1.04, background: "rgba(255,255,255,0.05)" }}
+            style={{ background: "transparent", color: "#fff", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 12, padding: "16px 36px", fontSize: 15, fontWeight: 500, cursor: "pointer", transition: "background 0.2s" }}
           >
-            How it works
+            Explore pipeline
           </motion.button>
         </div>
       </motion.div>
 
-      {/* Scroll indicator */}
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 1.5 }}
-        style={{ position: "absolute", bottom: 32, left: "50%", transform: "translateX(-50%)" }}
-      >
-        <motion.div
-          animate={{ y: [0, 8, 0] }}
-          transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
-          style={{
-            width: 1,
-            height: 40,
-            background: "linear-gradient(to bottom, rgba(255,255,255,0.6), transparent)",
-            margin: "0 auto",
-          }}
-        />
+      {/* Mouse scroll indicator */}
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 1.5 }} style={{ position: "absolute", bottom: 40, left: "50%", transform: "translateX(-50%)", display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+        <p style={{ fontSize: 10, letterSpacing: "0.2em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)" }}>Scroll to explore</p>
+        <motion.div animate={{ y: [0, 10, 0], opacity: [0.3, 1, 0.3] }} transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }} style={{ width: 1, height: 32, background: "linear-gradient(to bottom, #fff, transparent)" }} />
       </motion.div>
     </section>
   );
