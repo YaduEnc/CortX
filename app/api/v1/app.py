@@ -1,8 +1,15 @@
+import asyncio
 from datetime import date, datetime, time, timedelta, timezone
+import os
 import secrets
+import shutil
+import tempfile
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Body, Depends, File, Header, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi.responses import JSONResponse
+from starlette.background import BackgroundTask
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import selectinload
@@ -87,7 +94,11 @@ from app.models.entity import Entity, EntityMention
 from app.services.memory_card_summary import build_memory_card_fallback
 from app.services.memory_linking import create_founder_idea_for_link, create_or_reuse_entity_for_link, upsert_memory_link
 from app.services.memory_search import search_memories
+from app.services.embeddings import EmbeddingServiceError
 from app.services.semantic_search import query_memories_semantically
+from app.services.transcriber import get_transcriber
+from app.services.tts_service import TTSServiceError, get_tts_service
+from app.services.voice_answer import refine_spoken_answer
 from app.schemas.memory import AppMemoryQueryRequest, AppMemoryQueryResponse
 from app.utils.time import utc_now
 from app.workers.celery_app import celery_app
@@ -553,11 +564,16 @@ def get_current_app_user_preferences(
     user: AppUser = Depends(get_current_app_user),
 ) -> AppUserPreferencesResponse:
     prefs = _get_or_create_preferences(db, user.id)
+    if prefs.tts_provider != "elevenlabs":
+        prefs.tts_provider = "elevenlabs"
+        db.commit()
+        db.refresh(prefs)
     return AppUserPreferencesResponse(
         timezone=prefs.timezone,
         daily_summary_enabled=prefs.daily_summary_enabled,
         reminder_notifications_enabled=prefs.reminder_notifications_enabled,
         calendar_export_default_enabled=prefs.calendar_export_default_enabled,
+        tts_provider=prefs.tts_provider,
         updated_at=prefs.updated_at,
     )
 
@@ -579,6 +595,8 @@ def update_current_app_user_preferences(
         prefs.reminder_notifications_enabled = payload.reminder_notifications_enabled
     if payload.calendar_export_default_enabled is not None:
         prefs.calendar_export_default_enabled = payload.calendar_export_default_enabled
+    if payload.tts_provider is not None:
+        prefs.tts_provider = "elevenlabs"
 
     db.commit()
     db.refresh(prefs)
@@ -587,6 +605,7 @@ def update_current_app_user_preferences(
         daily_summary_enabled=prefs.daily_summary_enabled,
         reminder_notifications_enabled=prefs.reminder_notifications_enabled,
         calendar_export_default_enabled=prefs.calendar_export_default_enabled,
+        tts_provider=prefs.tts_provider,
         updated_at=prefs.updated_at,
     )
 
@@ -1109,6 +1128,97 @@ def ask_memories_semantically(
         query=payload.query
     )
     return AppMemoryQueryResponse(**result)
+
+
+def _encoded_header_text(value: str) -> str:
+    return quote(value.strip(), safe="")
+
+
+def _cleanup_voice_query(file_handle, temp_dir: str) -> None:
+    try:
+        file_handle.close()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@router.post("/memories/ask-voice")
+async def ask_memory_voice(
+    audio: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_app_user),
+):
+    temp_root = "/tmp/secondmind_voice"
+    os.makedirs(temp_root, exist_ok=True)
+    temp_dir = tempfile.mkdtemp(prefix="ask_voice_", dir=temp_root)
+    input_path = os.path.join(temp_dir, "query.wav")
+    output_path = os.path.join(temp_dir, "answer.wav")
+
+    try:
+        with open(input_path, "wb") as input_file:
+            while True:
+                chunk = await audio.read(1024 * 1024)
+                if not chunk:
+                    break
+                input_file.write(chunk)
+
+        transcription = await asyncio.to_thread(lambda: get_transcriber().transcribe(input_path))
+        query_text = str(transcription.get("full_text") or "").strip()
+        if not query_text:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return JSONResponse(status_code=400, content={"error": "Could not understand audio"})
+
+        try:
+            memory_result = query_memories_semantically(db=db, user_id=user.id, query=query_text)
+        except EmbeddingServiceError:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={
+                    "error": "AI memory service is unavailable. Start LM Studio and check LMSTUDIO_BASE_URL.",
+                    "query_text": query_text,
+                },
+            )
+        raw_answer = str(memory_result.get("answer") or "").strip()
+        spoken_answer = await asyncio.to_thread(refine_spoken_answer, query_text, raw_answer)
+        prefs = _get_or_create_preferences(db, user.id)
+        tts_provider = "elevenlabs"
+
+        try:
+            actual_tts_provider = await asyncio.to_thread(
+                lambda: get_tts_service().synthesize_to_file(
+                    spoken_answer,
+                    output_path,
+                    provider=tts_provider,
+                )
+            )
+        except TTSServiceError:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "answer": spoken_answer,
+                    "query_text": query_text,
+                    "sources": memory_result.get("sources") or [],
+                    "tts_provider": tts_provider,
+                    "tts_failed": True,
+                },
+            )
+
+        output_file = open(output_path, "rb")
+        return StreamingResponse(
+            output_file,
+            media_type="audio/wav",
+            headers={
+                "X-Query-Text": _encoded_header_text(query_text),
+                "X-Answer-Text": _encoded_header_text(spoken_answer),
+                "X-TTS-Provider": actual_tts_provider,
+                "X-Text-Encoding": "uri",
+            },
+            background=BackgroundTask(_cleanup_voice_query, output_file, temp_dir),
+        )
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
 
 
 @router.get("/captures/{session_id}/links", response_model=list[MemoryLinkResponse])

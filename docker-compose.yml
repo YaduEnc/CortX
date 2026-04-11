@@ -4,6 +4,23 @@ services:
     container_name: secondmind-api
     env_file:
       - .env
+    environment:
+      - COQUI_TTS_MODEL=${COQUI_TTS_MODEL:-tts_models/en/ljspeech/tacotron2-DDC}
+      - TTS_BACKEND=${TTS_BACKEND:-auto}
+      - ESPEAK_VOICE=${ESPEAK_VOICE:-en-us}
+      - ESPEAK_SPEED=${ESPEAK_SPEED:-165}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - ELEVENLABS_VOICE_ID=${ELEVENLABS_VOICE_ID:-SAz9YHcvj6GT2YYXdXww}
+      - ELEVENLABS_MODEL_ID=${ELEVENLABS_MODEL_ID:-eleven_multilingual_v2}
+      - ELEVENLABS_TIMEOUT_SECONDS=${ELEVENLABS_TIMEOUT_SECONDS:-45}
+      - SARVAM_API_KEY=${SARVAM_API_KEY:-}
+      - SARVAM_TTS_MODEL=${SARVAM_TTS_MODEL:-bulbul:v3}
+      - SARVAM_TTS_SPEAKER=${SARVAM_TTS_SPEAKER:-shubh}
+      - SARVAM_TTS_LANGUAGE_CODE=${SARVAM_TTS_LANGUAGE_CODE:-en-IN}
+      - SARVAM_TTS_SAMPLE_RATE=${SARVAM_TTS_SAMPLE_RATE:-24000}
+      - SARVAM_TTS_PACE=${SARVAM_TTS_PACE:-1.0}
+      - SARVAM_TTS_TEMPERATURE=${SARVAM_TTS_TEMPERATURE:-0.6}
+      - SARVAM_TTS_TIMEOUT_SECONDS=${SARVAM_TTS_TIMEOUT_SECONDS:-45}
     command: /bin/sh -c "python -m app.bootstrap && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
     depends_on:
       postgres:
@@ -16,6 +33,7 @@ services:
       - .:/app
       - hf_cache:/root/.cache/huggingface
       - whisper_models:/models
+      - tts_model_cache:/root/.local/share/tts
     networks:
       - secondmind-net
 
@@ -86,6 +104,8 @@ services:
       - "8000:80"
     volumes:
       - ./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - secondmind-net
 
@@ -115,6 +135,7 @@ volumes:
   minio_data:
   hf_cache:
   whisper_models:
+  tts_model_cache:
   qdrant_data:
 
 networks:

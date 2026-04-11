@@ -22,9 +22,9 @@ function Nav() {
   }, []);
 
   const navSpring = useSpring({
-    background: scrolled ? "rgba(0,0,0,0.92)" : "rgba(0,0,0,0)",
+    background: scrolled ? "rgba(0,0,0,0.85)" : "rgba(0,0,0,0)",
     borderBottom: scrolled
-      ? "1px solid rgba(255,255,255,0.1)"
+      ? "1px solid rgba(255,255,255,0.08)"
       : "1px solid rgba(255,255,255,0)",
     config: springConfig.gentle,
   });
@@ -38,25 +38,26 @@ function Nav() {
         left: 0,
         right: 0,
         zIndex: 100,
-        padding: "1rem 2.5rem",
+        padding: scrolled ? "1rem 2.5rem" : "1.2rem 2.5rem",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        backdropFilter: "blur(14px)",
+        backdropFilter: scrolled ? "blur(20px)" : "none",
+        transition: "padding 0.3s",
       }}
     >
       <motion.div
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
         transition={{ duration: 0.6 }}
-        style={{ display: "flex", alignItems: "center", gap: 10 }}
+        style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}
+        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
       >
-    
         <span
           style={{
-            fontWeight: 700,
-            fontSize: 18,
-            letterSpacing: "-0.03em",
+            fontWeight: 800,
+            fontSize: 20,
+            letterSpacing: "-0.04em",
             color: "#fff",
           }}
         >
@@ -70,40 +71,49 @@ function Nav() {
         transition={{ delay: 0.3 }}
         style={{ display: "flex", gap: 32, alignItems: "center" }}
       >
-        {["How it works", "Features", "Vision"].map((l) => (
+        {[
+          { name: "How it works", id: "how-it-works" },
+          { name: "Features", id: "features" },
+          { name: "Vision", id: "vision" }
+        ].map((l) => (
           <a
-            key={l}
-            href="#"
+            key={l.id}
+            href={`#${l.id}`}
             style={{
-              color: "rgba(255,255,255,0.55)",
-              fontSize: 14,
-              fontWeight: 400,
-              transition: "color 0.2s",
+              color: "rgba(255,255,255,0.5)",
+              fontSize: 13,
+              fontWeight: 500,
+              transition: "color 0.2s, transform 0.2s",
             }}
-            onMouseEnter={(e) => ((e.target as HTMLElement).style.color = "#fff")}
-            onMouseLeave={(e) =>
-              ((e.target as HTMLElement).style.color = "rgba(255,255,255,0.55)")
-            }
+            onMouseEnter={(e) => {
+              (e.target as HTMLElement).style.color = "#fff";
+              (e.target as HTMLElement).style.transform = "translateY(-1px)";
+            }}
+            onMouseLeave={(e) => {
+              (e.target as HTMLElement).style.color = "rgba(255,255,255,0.5)";
+              (e.target as HTMLElement).style.transform = "translateY(0)";
+            }}
           >
-            {l}
+            {l.name}
           </a>
         ))}
         <motion.button
-          whileHover={{ scale: 1.04 }}
-          whileTap={{ scale: 0.97 }}
+          whileHover={{ scale: 1.05, boxShadow: "0 0 20px rgba(255,255,255,0.1)" }}
+          whileTap={{ scale: 0.95 }}
           style={{
             background: "#fff",
             color: "#000",
             border: "none",
-            borderRadius: 6,
-            padding: "8px 20px",
+            borderRadius: 8,
+            padding: "10px 24px",
             fontSize: 13,
-            fontWeight: 600,
+            fontWeight: 700,
             cursor: "pointer",
             letterSpacing: "-0.01em",
           }}
+          onClick={() => document.getElementById("cta")?.scrollIntoView({ behavior: "smooth" })}
         >
-          Get early access
+          Get access
         </motion.button>
       </motion.div>
     </animated.nav>
@@ -249,6 +259,7 @@ function Hero() {
           }}
         >
           <motion.button
+            onClick={() => document.getElementById("cta")?.scrollIntoView({ behavior: "smooth" })}
             whileHover={{ scale: 1.04, boxShadow: "0 0 30px rgba(255,255,255,0.2)" }}
             whileTap={{ scale: 0.97 }}
             style={{
@@ -266,6 +277,7 @@ function Hero() {
             Request early access →
           </motion.button>
           <motion.button
+            onClick={() => document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" })}
             whileHover={{ scale: 1.04, background: "rgba(255,255,255,0.08)" }}
             style={{
               background: "transparent",
@@ -404,105 +416,98 @@ function ProblemSection() {
 
 function PipelineSection() {
   const ref = useRef(null);
-  const isInView = useInView(ref, { once: true, margin: "-80px" });
+  const isInView = useInView(ref, { once: true, margin: "-100px" });
 
   const steps = [
-    { label: "Capture", detail: "ESP32-S3 wearable. Tap-to-record via BLE microphone.", icon: "⬡" },
-    { label: "Reconstruct", detail: "Raw audio → WAV (16kHz) pipeline.", icon: "⬢" },
-    { label: "Transcribe", detail: "Whisper / Deepgram high-accuracy STT.", icon: "⬡" },
-    { label: "Understand", detail: "LLM: task extraction, idea detection, summarization.", icon: "⬢" },
-    { label: "Structure", detail: "Vector DB for semantic search and recall.", icon: "⬡" },
+    { label: "Capture", detail: "ESP32-S3 wearable tags audio via BLE.", icon: "⬡" },
+    { label: "Stream", detail: "Real-time Opus/WAV 16kHz pipeline.", icon: "⬢" },
+    { label: "Transcribe", detail: "Whisper Large-v3 turbo-speed STT.", icon: "⬡" },
+    { label: "Distill", detail: "LLM task & insight extraction.", icon: "⬢" },
+    { label: "Connect", detail: "Semantic linking in Vector DB.", icon: "⬡" },
   ];
 
   const trail = useTrail(steps.length, {
     opacity: isInView ? 1 : 0,
-    x: isInView ? 0 : 30,
-    config: { tension: 180, friction: 22 },
+    y: isInView ? 0 : 20,
+    config: springConfig.stiff,
   });
+
+  // Waveform animation
+  const wavePoints = [10, 30, 15, 45, 20, 55, 10, 35, 25, 50, 20];
 
   return (
     <section
       ref={ref}
       style={{
         background: "#000",
-        padding: "120px 2rem",
+        padding: "140px 2rem",
         borderTop: "1px solid rgba(255,255,255,0.06)",
+        position: "relative",
+        overflow: "hidden",
       }}
     >
-      <div style={{ maxWidth: 1000, margin: "0 auto" }}>
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={isInView ? { opacity: 1, y: 0 } : {}}
-          transition={{ duration: 0.6 }}
-          style={{ marginBottom: 60, textAlign: "center" }}
-        >
-          <p style={{ fontSize: 11, letterSpacing: "0.15em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)", marginBottom: 12 }}>
-            The Cognitive Pipeline
-          </p>
-          <h2 style={{ fontSize: "clamp(28px, 4vw, 48px)", fontWeight: 800, letterSpacing: "-0.04em", color: "#fff" }}>
-            Speech to Structure
-          </h2>
-        </motion.div>
+      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+        <div style={{ textAlign: "center", marginBottom: 80 }}>
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={isInView ? { opacity: 1 } : {}}
+            style={{ fontSize: 12, letterSpacing: "0.2em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", marginBottom: 16 }}
+          >
+            The Cognitive Engine
+          </motion.p>
+          <motion.h2
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={isInView ? { opacity: 1, scale: 1 } : {}}
+            style={{ fontSize: "clamp(32px, 5vw, 64px)", fontWeight: 900, letterSpacing: "-0.04em", color: "#fff" }}
+          >
+            Speech to Structure.
+          </motion.h2>
+        </div>
 
-        <div
-          style={{
-            display: "flex",
-            alignItems: "stretch",
-            gap: 0,
-            position: "relative",
-            overflowX: "auto",
-            paddingBottom: 8,
-          }}
-        >
+        {/* Dynamic Waveform Visualization */}
+        <div style={{ position: "relative", height: 120, marginBottom: 60, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+          {wavePoints.map((h, i) => (
+            <motion.div
+              key={i}
+              initial={{ height: 4 }}
+              animate={isInView ? { height: [h, h * 0.6, h] } : {}}
+              transition={{ repeat: Infinity, duration: 1 + i * 0.1, ease: "easeInOut" }}
+              style={{
+                width: 4,
+                background: "linear-gradient(to bottom, transparent, #fff, transparent)",
+                borderRadius: 2,
+                opacity: 0.3,
+              }}
+            />
+          ))}
+          <div style={{ position: "absolute", width: "100%", height: "1px", background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent)", top: "50%" }} />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 1 }}>
           {trail.map((style: any, i: number) => (
-            <animated.div key={i} style={{ ...style, flex: "1 1 0", minWidth: 140 }}>
-              <div
-                style={{
-                  position: "relative",
-                  padding: "28px 20px",
-                  background: i % 2 === 0 ? "#111" : "#0d0d0d",
-                  border: "1px solid rgba(255,255,255,0.07)",
-                  borderLeft: i > 0 ? "none" : "1px solid rgba(255,255,255,0.07)",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 12,
-                  height: "100%",
-                }}
-              >
-                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.2)", fontWeight: 600, letterSpacing: "0.1em" }}>
-                  0{i + 1}
+            <animated.div
+              key={i}
+              style={{
+                ...style,
+                background: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.05)",
+                padding: "40px 24px",
+                position: "relative",
+                transition: "background 0.3s",
+              }}
+              onMouseEnter={(e: any) => e.currentTarget.style.background = "rgba(255,255,255,0.05)"}
+              onMouseLeave={(e: any) => e.currentTarget.style.background = "rgba(255,255,255,0.02)"}
+            >
+              <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.2)", marginBottom: 20 }}>0{i+1}</div>
+              <div style={{ fontSize: 24, marginBottom: 12, color: "#fff" }}>{steps[i].icon}</div>
+              <h3 style={{ fontSize: 17, fontWeight: 700, color: "#fff", marginBottom: 8, letterSpacing: "-0.02em" }}>{steps[i].label}</h3>
+              <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", lineHeight: 1.6 }}>{steps[i].detail}</p>
+              
+              {i < steps.length - 1 && (
+                <div style={{ position: "absolute", right: -12, top: "50%", transform: "translateY(-50%)", zIndex: 5, color: "rgba(255,255,255,0.1)", fontSize: 24 }}>
+                   ›
                 </div>
-                <div style={{ fontSize: 20, color: "rgba(255,255,255,0.3)" }}>{steps[i].icon}</div>
-                <p style={{ fontSize: 15, fontWeight: 700, color: "#fff", letterSpacing: "-0.02em" }}>
-                  {steps[i].label}
-                </p>
-                <p style={{ fontSize: 12, color: "rgba(255,255,255,0.35)", lineHeight: 1.6 }}>
-                  {steps[i].detail}
-                </p>
-                {i < steps.length - 1 && (
-                  <div
-                    style={{
-                      position: "absolute",
-                      right: -10,
-                      top: "50%",
-                      transform: "translateY(-50%)",
-                      zIndex: 2,
-                      width: 18,
-                      height: 18,
-                      background: "#000",
-                      border: "1px solid rgba(255,255,255,0.12)",
-                      borderRadius: 2,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: 10,
-                      color: "rgba(255,255,255,0.4)",
-                    }}
-                  >
-                    →
-                  </div>
-                )}
-              </div>
+              )}
             </animated.div>
           ))}
         </div>
@@ -513,174 +518,123 @@ function PipelineSection() {
 
 function DeviceSection() {
   const ref = useRef(null);
-  const isInView = useInView(ref, { once: true, margin: "-80px" });
-  const { scrollYProgress } = useScroll({ target: ref, offset: ["start end", "end start"] });
-  const yFast = useTransform(scrollYProgress, [0, 1], [40, -40]);
-  const ySlow = useTransform(scrollYProgress, [0, 1], [20, -20]);
-  const descOpacity = useTransform(scrollYProgress, [0, 0.3, 0.7, 1], [0, 1, 1, 0]);
-  const descY = useTransform(scrollYProgress, [0, 0.3, 0.7, 1], [40, 0, 0, -40]);
-
+  const isInView = useInView(ref, { once: true, margin: "-100px" });
+  
   const nodes = [
-    { angle: 0, label: "BLE", delay: 0.2, description: "Wireless streaming", detail: "Seamless Bluetooth Low Energy connection enables real-time audio streaming with minimal power consumption, perfect for all-day wear." },
-    { angle: 72, label: "MIC", delay: 0.35, description: "MEMS microphone", detail: "High-quality noise-canceling microphone captures crystal-clear audio even in noisy environments." },
-    { angle: 144, label: "TAP", delay: 0.5, description: "Tap interface", detail: "Detect multi-tap gestures for intuitive control without requiring a dedicated button." },
-    { angle: 216, label: "PROC", delay: 0.65, description: "Processing", detail: "Dual-core processor handles audio encoding and device logic simultaneously with ultra-low latency." },
-    { angle: 288, label: "ENC", delay: 0.8, description: "End-to-end encryption", detail: "Military-grade encryption ensures all audio data is protected throughout transmission and processing." },
+    { label: "BLE 5.0", detail: "Ultra-low power audio streaming.", x: 20, y: 30 },
+    { label: "Dual MEMS", detail: "Beamforming noise cancellation.", x: 80, y: 25 },
+    { label: "Tap Surface", detail: "Capacitive touch command logic.", x: 50, y: 80 },
+    { label: "S3 Core", detail: "240MHz AI-accelerated compute.", x: 15, y: 70 },
   ];
 
-  const [hoveredNode, setHoveredNode] = useState<number | null>(null);
+  const [activeNode, setActiveNode] = useState(0);
 
   return (
     <section
       ref={ref}
       style={{
         background: "#0a0a0a",
-        padding: "120px 2rem",
+        padding: "160px 2rem",
         borderTop: "1px solid rgba(255,255,255,0.06)",
         overflow: "hidden",
       }}
     >
-      <div
-        style={{
-          maxWidth: 1000,
-          margin: "0 auto",
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 60,
-          alignItems: "center",
-        }}
-      >
-        {/* Device Diagram */}
-        <div style={{ position: "relative", height: 360, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <motion.div style={{ position: "absolute", width: 320, height: 320, borderRadius: "50%", border: "1px solid rgba(255,255,255,0.04)", y: ySlow }} />
-          <motion.div style={{ position: "absolute", width: 230, height: 230, borderRadius: "50%", border: "1px solid rgba(255,255,255,0.07)", y: yFast }} />
-          <motion.div style={{ position: "absolute", width: 150, height: 150, borderRadius: "50%", border: "1px solid rgba(255,255,255,0.12)", y: ySlow }} />
+      <div style={{ maxWidth: 1100, margin: "0 auto", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 80, alignItems: "center" }}>
+        
+        {/* Hardware Visual */}
+        <div style={{ position: "relative", height: 500, background: "radial-gradient(circle at 50% 50%, rgba(255,255,255,0.03) 0%, transparent 70%)", borderRadius: 24, border: "1px solid rgba(255,255,255,0.03)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          
+          {/* Blueprint Grid */}
+          <div style={{ position: "absolute", inset: 0, opacity: 0.1, backgroundImage: "radial-gradient(rgba(255,255,255,0.2) 1px, transparent 1px)", backgroundSize: "20px 20px" }} />
 
-          {/* Core */}
+          {/* Main Device Body (SVG) */}
           <motion.div
-            animate={isInView ? { scale: [0.9, 1.05, 1], opacity: [0, 1] } : {}}
-            transition={{ duration: 1, ease: [0.22, 1, 0.36, 1] }}
-            style={{
-              width: 90,
-              height: 90,
-              borderRadius: "50%",
-              background: "#111",
-              border: "1px solid rgba(255,255,255,0.2)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              flexDirection: "column",
-              gap: 4,
-              zIndex: 2,
-            }}
+            animate={isInView ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.9 }}
+            transition={{ duration: 1.2, ease: [0.22, 1, 0.36, 1] }}
+            style={{ width: 280, height: 280, position: "relative" }}
           >
-            <motion.div
-              animate={{ scale: [1, 1.3, 1], opacity: [0.8, 0.4, 0.8] }}
-              transition={{ repeat: Infinity, duration: 2.2, ease: "easeInOut" }}
-              style={{ width: 10, height: 10, borderRadius: "50%", background: "#fff" }}
-            />
-            <p style={{ fontSize: 8, color: "rgba(255,255,255,0.3)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
-              ESP32-S3
-            </p>
-          </motion.div>
+            <svg viewBox="0 0 200 200" style={{ width: "100%", height: "100%", filter: "drop-shadow(0 0 30px rgba(255,255,255,0.05))" }}>
+              <motion.rect 
+                x="40" y="40" width="120" height="120" rx="20" 
+                fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="0.5" 
+                initial={{ pathLength: 0 }}
+                animate={isInView ? { pathLength: 1 } : {}}
+                transition={{ duration: 2 }}
+              />
+              <motion.circle 
+                cx="100" cy="100" r="40" 
+                fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="0.5" 
+                initial={{ pathLength: 0 }}
+                animate={isInView ? { pathLength: 1 } : {}}
+                transition={{ duration: 2, delay: 0.5 }}
+              />
+              {/* Internal components logic */}
+              <rect x="70" y="70" width="15" height="15" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.2)" strokeWidth="0.2" />
+              <rect x="115" y="70" width="15" height="15" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.2)" strokeWidth="0.2" />
+            </svg>
 
-          {/* Orbital nodes */}
-          {nodes.map(({ angle, label, delay }, i) => {
-            const rad = (angle * Math.PI) / 180;
-            const x = Math.cos(rad) * 110;
-            const y = Math.sin(rad) * 110;
-            return (
+            {/* Hotspots */}
+            {nodes.map((node, i) => (
               <motion.div
                 key={i}
-                initial={{ opacity: 0, scale: 0 }}
-                animate={isInView ? { opacity: 1, scale: 1 } : {}}
-                transition={{ delay, duration: 0.5 }}
-                onHoverStart={() => setHoveredNode(i)}
-                onHoverEnd={() => setHoveredNode(null)}
+                onClick={() => setActiveNode(i)}
                 style={{
                   position: "absolute",
-                  left: `calc(50% + ${x}px - 18px)`,
-                  top: `calc(50% + ${y}px - 18px)`,
-                  width: 36,
-                  height: 36,
-                  borderRadius: 6,
-                  background: hoveredNode === i ? "rgba(255,255,255,0.1)" : "#111",
-                  border: hoveredNode === i ? "1px solid rgba(255,255,255,0.4)" : "1px solid rgba(255,255,255,0.15)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: 8,
-                  color: hoveredNode === i ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.5)",
-                  fontWeight: 700,
-                  letterSpacing: "0.05em",
-                  zIndex: 2,
+                  left: `${node.x}%`,
+                  top: `${node.y}%`,
+                  width: 12,
+                  height: 12,
+                  background: activeNode === i ? "#fff" : "transparent",
+                  border: "1px solid #fff",
+                  borderRadius: "50%",
                   cursor: "pointer",
-                  transition: "all 0.2s",
+                  zIndex: 10,
                 }}
               >
-                {label}
+                <motion.div
+                  animate={{ scale: [1, 2.5, 1], opacity: [0.5, 0, 0.5] }}
+                  transition={{ repeat: Infinity, duration: 2 }}
+                  style={{ position: "absolute", inset: -1, border: "1px solid #fff", borderRadius: "50%" }}
+                />
               </motion.div>
-            );
-          })}
+            ))}
+          </motion.div>
         </div>
 
-        {/* Copy with Parallax Descriptions */}
-        <motion.div
-          initial={{ opacity: 0, x: 30 }}
-          animate={isInView ? { opacity: 1, x: 0 } : {}}
-          transition={{ duration: 0.7 }}
-        >
-          <p style={{ fontSize: 11, letterSpacing: "0.15em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)", marginBottom: 16 }}>
-            The Device
-          </p>
-          <h2 style={{ fontSize: "clamp(24px, 3.5vw, 40px)", fontWeight: 800, letterSpacing: "-0.04em", lineHeight: 1.15, color: "#fff", marginBottom: 20 }}>
-            Minimal input.
-            <br />
-            Maximum intelligence.
-          </h2>
-          <p style={{ fontSize: 15, color: "rgba(255,255,255,0.4)", lineHeight: 1.7, marginBottom: 28 }}>
-            The ESP32-S3 wearable is designed for frictionless capture. A single tap starts recording. BLE streams audio to your phone. The device disappears — your thoughts don't.
-          </p>
+        {/* Copy */}
+        <div style={{ textAlign: "left" }}>
+          <motion.p
+            initial={{ opacity: 0, x: 20 }}
+            animate={isInView ? { opacity: 1, x: 0 } : {}}
+            style={{ fontSize: 12, letterSpacing: "0.2em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", marginBottom: 16 }}
+          >
+            Tactile Intelligence
+          </motion.p>
+          <motion.h2
+            initial={{ opacity: 0, x: 20 }}
+            animate={isInView ? { opacity: 1, x: 0 } : {}}
+            transition={{ delay: 0.1 }}
+            style={{ fontSize: "clamp(32px, 4vw, 56px)", fontWeight: 900, letterSpacing: "-0.04em", color: "#fff", marginBottom: 32, lineHeight: 1 }}
+          >
+            Wearable<br />Compute.
+          </motion.h2>
 
-          {/* Parallax Feature Descriptions - Hover to reveal */}
-          <div style={{ position: "relative", height: 60, marginBottom: 28 }}>
-            <motion.div style={{ opacity: descOpacity, y: descY, position: "absolute", left: 0, right: 0, pointerEvents: "none" }}>
-              {hoveredNode !== null && (
-                <div>
-                  <p style={{ fontSize: 12, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", marginBottom: 8 }}>
-                    {nodes[hoveredNode].description}
-                  </p>
-                  <p style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", lineHeight: 1.6 }}>
-                    {nodes[hoveredNode].detail}
-                  </p>
-                </div>
-              )}
-            </motion.div>
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {[
-              ["Processor", "ESP32-S3 dual-core"],
-              ["Connection", "Bluetooth Low Energy"],
-              ["Input", "Tap-to-record"],
-              ["Audio", "16kHz WAV capture"],
-            ].map(([k, v]) => (
-              <div
-                key={k}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  fontSize: 13,
-                  paddingBottom: 10,
-                  borderBottom: "1px solid rgba(255,255,255,0.06)",
-                }}
+          <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
+            {nodes.map((node, i) => (
+              <motion.div
+                key={i}
+                initial={{ opacity: 0 }}
+                animate={isInView ? { opacity: activeNode === i ? 1 : 0.3 } : {}}
+                style={{ cursor: "pointer", transition: "opacity 0.3s" }}
+                onClick={() => setActiveNode(i)}
               >
-                <span style={{ color: "rgba(255,255,255,0.3)" }}>{k}</span>
-                <span style={{ color: "#fff", fontWeight: 500 }}>{v}</span>
-              </div>
+                <h4 style={{ fontSize: 18, fontWeight: 700, color: "#fff", marginBottom: 4, letterSpacing: "-0.02em" }}>{node.label}</h4>
+                <p style={{ fontSize: 14, color: "rgba(255,255,255,0.5)", lineHeight: 1.6 }}>{node.detail}</p>
+              </motion.div>
             ))}
           </div>
-        </motion.div>
+        </div>
+
       </div>
     </section>
   );
@@ -969,7 +923,7 @@ function CTA() {
             onClick={() => {
               // Download APK from public folder
               const link = document.createElement("a");
-              link.href = "/secondmind.apk"; // Place your APK file in the public folder
+              link.href = "/app-release.apk"; // Corrected filename
               link.download = "SecondMind.apk";
               document.body.appendChild(link);
               link.click();
@@ -1016,41 +970,77 @@ function Footer() {
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        
-        <span style={{ fontWeight: 700, fontSize: 14, letterSpacing: "-0.02em", color: "#fff" }}>SecondMind</span>
+        <span style={{ fontWeight: 800, fontSize: 16, letterSpacing: "-0.04em", color: "#fff" }}>SecondMind</span>
       </div>
       <p style={{ fontSize: 12, color: "rgba(255,255,255,0.2)" }}>© 2025 SecondMind. All rights reserved.</p>
       <div style={{ display: "flex", gap: 24 }}>
-        {["Privacy", "Terms", "Contact"].map((l) => (
-          <a key={l} href="#" style={{ fontSize: 12, color: "rgba(255,255,255,0.3)" }}>
-            {l}
+        {[
+          { name: "Privacy", href: "#" },
+          { name: "Terms", href: "#" },
+          { name: "Contact", href: "#" }
+        ].map((l) => (
+          <a key={l.name} href={l.href} style={{ fontSize: 12, color: "rgba(255,255,255,0.3)", transition: "color 0.2s" }} onMouseEnter={(e) => (e.target as HTMLElement).style.color = "#fff"} onMouseLeave={(e) => (e.target as HTMLElement).style.color = "rgba(255,255,255,0.3)"}>
+            {l.name}
           </a>
         ))}
       </div>
     </footer>
   );
 }
+
 export default function App() {
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+
   useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      setMousePos({ x: e.clientX, y: e.clientY });
+    };
+    window.addEventListener("mousemove", handleMouseMove);
+    
     const style = document.createElement("style");
     style.textContent = globalCSS;
     document.head.appendChild(style);
+    
     return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
       document.head.removeChild(style);
     };
   }, []);
 
   return (
-    <div style={{ background: "#000", minHeight: "100vh" }}>
-      <Nav />
-      <Hero />
-      <ProblemSection />
-      <PipelineSection />
-      <DeviceSection />
-      <FeaturesSection />
-      <VisionSection />
-      <CTA />
-      <Footer />
+    <div style={{ background: "#000", minHeight: "100vh", position: "relative", color: "#fff", overflowX: "hidden" }}>
+      
+      {/* Ambient Neural Background */}
+      <div 
+        style={{ 
+          position: "fixed", 
+          inset: 0, 
+          zIndex: 0, 
+          pointerEvents: "none",
+          background: `radial-gradient(circle at ${mousePos.x}px ${mousePos.y}px, rgba(255,255,255,0.03) 0%, transparent 40%)`
+        }} 
+      />
+      <div style={{ position: "fixed", inset: 0, zIndex: 0, opacity: 0.1, backgroundImage: "url('https://grainy-gradients.vercel.app/noise.svg')", pointerEvents: "none" }} />
+      
+      <div style={{ position: "relative", zIndex: 1 }}>
+        <Nav />
+        <Hero />
+        <div id="how-it-works">
+          <ProblemSection />
+          <PipelineSection />
+          <DeviceSection />
+        </div>
+        <div id="features">
+          <FeaturesSection />
+        </div>
+        <div id="vision">
+          <VisionSection />
+        </div>
+        <div id="cta">
+          <CTA />
+        </div>
+        <Footer />
+      </div>
     </div>
   );
 }

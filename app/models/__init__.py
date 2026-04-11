@@ -1,3 +1,4 @@
+from app.models.action import Contact, PendingAction
 from app.models.assistant import AIExtraction, AIItem
 from app.models.app_user import AppUser
 from app.models.capture import AudioChunk, CaptureSession
@@ -28,6 +29,8 @@ __all__ = [
     "TranscriptSegment",
     "AIExtraction",
     "AIItem",
+    "Contact",
+    "PendingAction",
     "AppUserPreferences",
     "Entity",
     "EntityMention",

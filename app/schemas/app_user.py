@@ -64,6 +64,7 @@ class AppUserPreferencesResponse(BaseModel):
     daily_summary_enabled: bool
     reminder_notifications_enabled: bool
     calendar_export_default_enabled: bool
+    tts_provider: str = Field(pattern="^elevenlabs$")
     updated_at: datetime
 
 
@@ -72,6 +73,7 @@ class AppUserPreferencesUpdateRequest(BaseModel):
     daily_summary_enabled: bool | None = None
     reminder_notifications_enabled: bool | None = None
     calendar_export_default_enabled: bool | None = None
+    tts_provider: str | None = Field(default=None, pattern="^elevenlabs$")
 
 
 class PairedDeviceResponse(BaseModel):

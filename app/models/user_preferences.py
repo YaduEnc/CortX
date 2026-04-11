@@ -22,6 +22,7 @@ class AppUserPreferences(Base):
     daily_summary_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     reminder_notifications_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     calendar_export_default_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    tts_provider: Mapped[str] = mapped_column(String(32), nullable=False, default="elevenlabs", server_default="elevenlabs")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

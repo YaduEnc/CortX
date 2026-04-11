@@ -5,11 +5,13 @@ from fastapi import FastAPI
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.logging import setup_logging
+from app.services.tts_service import preload_tts_model
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     setup_logging()
+    preload_tts_model()
     yield
 
 

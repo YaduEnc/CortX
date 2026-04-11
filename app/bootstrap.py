@@ -5,6 +5,7 @@ from app.core.logging import setup_logging
 from app.db.base import Base
 from app.db.session import engine
 from app.services.storage import get_storage
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +13,23 @@ logger = logging.getLogger(__name__)
 def main() -> None:
     setup_logging()
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE app_user_preferences "
+                "ADD COLUMN IF NOT EXISTS tts_provider VARCHAR(32) NOT NULL DEFAULT 'elevenlabs'"
+            )
+        )
+        conn.execute(
+            text("ALTER TABLE app_user_preferences ALTER COLUMN tts_provider SET DEFAULT 'elevenlabs'")
+        )
+        conn.execute(
+            text(
+                "UPDATE app_user_preferences "
+                "SET tts_provider = 'elevenlabs' "
+                "WHERE tts_provider IS DISTINCT FROM 'elevenlabs'"
+            )
+        )
     try:
         get_storage().ensure_bucket()
     except Exception as exc:  # noqa: BLE001

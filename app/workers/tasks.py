@@ -1,4 +1,5 @@
 import logging
+import asyncio
 import tempfile
 import time
 from datetime import timedelta
@@ -9,12 +10,15 @@ from celery import shared_task
 from sqlalchemy import delete, select
 
 from app.db.session import SessionLocal
+from app.models.action import PendingAction, PendingActionStatus
 from app.models.assistant import AIExtraction, AIExtractionStatus, AIItem
 from app.models.capture import CaptureSession, SessionStatus
 from app.models.pairing import DeviceUserBinding
 from app.models.transcript import Transcript, TranscriptSegment
+from app.services.action_detector import detect_communication_intents, draft_message
 from app.services.assistant_llm import AssistantLLMError, extract_assistant_payload
 from app.services.assistant_pipeline import AssistantPipelineError, prepare_extraction_record
+from app.services.contact_resolver import resolve_contact
 from app.services.entity_extraction import EntityExtractionError, extract_entities_from_transcript, persist_entities
 from app.services.founder_intelligence import FounderIntelligenceError, process_founder_intelligence
 from app.services.memory_card_summary import (
@@ -313,6 +317,15 @@ def process_session_ai_extraction(self, session_id: str) -> dict:
         except Exception:  # noqa: BLE001
             logger.exception("Failed to queue founder intelligence for session=%s", session_id)
 
+        try:
+            self.app.send_task(
+                "app.workers.tasks.process_session_actions",
+                args=[session_id, str(extraction.user_id)],
+                queue="ai",
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to queue action detection for session=%s", session_id)
+
         return {"status": "ok", "session_id": session_id, "extraction_id": extraction.id}
 
     except Retry:
@@ -353,6 +366,83 @@ def process_session_ai_extraction(self, session_id: str) -> dict:
         else:
             logger.exception("AI extraction failed session=%s", session_id)
         return {"status": "error", "reason": str(exc)}
+
+    finally:
+        db.close()
+
+
+@shared_task(bind=True, name="app.workers.tasks.process_session_actions")
+def process_session_actions(self, session_id: str, user_id: str) -> dict:
+    db = SessionLocal()
+    started = time.perf_counter()
+
+    try:
+        transcript = db.scalar(select(Transcript).where(Transcript.session_id == session_id))
+        if not transcript or not transcript.full_text.strip():
+            logger.info("Action detection skipped session=%s reason=missing_transcript", session_id)
+            return {"status": "ok", "session_id": session_id, "actions_detected": 0}
+
+        intents = asyncio.run(detect_communication_intents(transcript.full_text))
+        created = 0
+
+        for intent in intents:
+            confidence = float(intent.get("confidence") or 0.0)
+            if confidence < 0.5:
+                continue
+
+            recipient_name = str(intent.get("recipient_name") or "").strip()
+            original_snippet = str(intent.get("original_snippet") or "").strip() or None
+            action_type = str(intent.get("preferred_channel") or intent.get("action_type") or "whatsapp").strip()
+            if not recipient_name:
+                continue
+
+            existing = db.scalar(
+                select(PendingAction).where(
+                    PendingAction.user_id == user_id,
+                    PendingAction.session_id == session_id,
+                    PendingAction.action_type == action_type,
+                    PendingAction.recipient_name == recipient_name,
+                    PendingAction.original_transcript_snippet == original_snippet,
+                )
+            )
+            if existing:
+                continue
+
+            contact, resolved = asyncio.run(resolve_contact(user_id, recipient_name, db))
+            draft = asyncio.run(draft_message(intent))
+
+            action = PendingAction(
+                user_id=user_id,
+                session_id=session_id,
+                action_type=action_type,
+                status=PendingActionStatus.pending.value,
+                contact_id=contact.id if contact else None,
+                recipient_name=contact.name if contact else recipient_name,
+                recipient_phone=(contact.whatsapp_number or contact.phone) if contact else None,
+                recipient_email=contact.email if contact else None,
+                contact_resolved=resolved,
+                draft_subject=draft.get("subject"),
+                draft_body=str(draft.get("body") or intent.get("message_context") or "").strip(),
+                original_transcript_snippet=original_snippet,
+                confidence_score=confidence,
+            )
+            db.add(action)
+            created += 1
+
+        db.commit()
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        logger.info(
+            "Action detection completed session=%s actions_detected=%s elapsed_ms=%s",
+            session_id,
+            created,
+            elapsed_ms,
+        )
+        return {"status": "ok", "session_id": session_id, "actions_detected": created}
+
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.exception("Action detection failed session=%s", session_id)
+        return {"status": "error", "reason": str(exc), "session_id": session_id}
 
     finally:
         db.close()

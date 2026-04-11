@@ -48,7 +48,7 @@ def load_settings() -> Settings:
         supabase_url=_required_env("SUPABASE_URL"),
         supabase_service_role_key=_required_env("SUPABASE_SERVICE_ROLE_KEY"),
         lm_studio_base_url=os.getenv("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1").strip().rstrip("/"),
-        lm_studio_model=os.getenv("LM_STUDIO_MODEL", "qwen2.5-7b-instruct").strip(),
+        lm_studio_model=os.getenv("LM_STUDIO_MODEL", "qwen/qwen2.5-coder-14b").strip(),
         poll_seconds=float(os.getenv("AI_PIPELINE_POLL_SECONDS", "2")),
         request_timeout_seconds=int(os.getenv("AI_PIPELINE_REQUEST_TIMEOUT_SECONDS", "180")),
         max_items_per_type=int(os.getenv("AI_PIPELINE_MAX_ITEMS_PER_TYPE", "12")),

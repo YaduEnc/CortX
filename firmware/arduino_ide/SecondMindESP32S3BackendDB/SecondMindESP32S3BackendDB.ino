@@ -40,8 +40,8 @@
 // ---------------------------------------------------------------------
 // USER CONFIG
 // ---------------------------------------------------------------------
-const char* WIFI_SSID = "bappahive";
-const char* WIFI_PASSWORD = "knocknock";
+const char* WIFI_SSID = "Yadu Phone";
+const char* WIFI_PASSWORD = "0000110000";
 
 const char* API_BASE_URL = "https://hamza.yaduraj.me/v1";
 const char* DEVICE_CODE = "shashwat";

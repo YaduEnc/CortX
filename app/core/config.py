@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,12 +34,49 @@ class Settings(BaseSettings):
     whisper_compute_type: str = "int8"
     whisper_device: str = "cpu"
 
-    lmstudio_base_url: str = "http://host.docker.internal:1234/v1"
-    lmstudio_model: str = "dolphin-3.0-llama-3.1-8b"
+    lmstudio_base_url: str = Field(
+        "http://host.docker.internal:1234/v1",
+        validation_alias=AliasChoices("LMSTUDIO_BASE_URL", "LM_STUDIO_BASE_URL"),
+    )
+    lmstudio_model: str = Field(
+        "qwen/qwen2.5-coder-14b",
+        validation_alias=AliasChoices("LMSTUDIO_MODEL", "LM_STUDIO_MODEL"),
+    )
     lmstudio_embedding_model: str = "nomic-embed-text-v1.5"
-    lmstudio_api_key: str | None = None
-    lmstudio_timeout_seconds: int = 45
-    lmstudio_temperature: float = 0.0
+    lmstudio_api_key: str | None = Field(
+        None,
+        validation_alias=AliasChoices("LMSTUDIO_API_KEY", "LM_STUDIO_API_KEY"),
+    )
+    lmstudio_timeout_seconds: int = Field(
+        45,
+        validation_alias=AliasChoices(
+            "LMSTUDIO_TIMEOUT_SECONDS",
+            "LM_STUDIO_TIMEOUT_SECONDS",
+        ),
+    )
+    lmstudio_temperature: float = Field(
+        0.0,
+        validation_alias=AliasChoices(
+            "LMSTUDIO_TEMPERATURE",
+            "LM_STUDIO_TEMPERATURE",
+        ),
+    )
+    coqui_tts_model: str = "tts_models/en/ljspeech/tacotron2-DDC"
+    tts_backend: str = "auto"
+    espeak_voice: str = "en-us"
+    espeak_speed: int = 165
+    elevenlabs_api_key: str | None = None
+    elevenlabs_voice_id: str = "SAz9YHcvj6GT2YYXdXww"
+    elevenlabs_model_id: str = "eleven_multilingual_v2"
+    elevenlabs_timeout_seconds: int = 45
+    sarvam_api_key: str | None = None
+    sarvam_tts_model: str = "bulbul:v3"
+    sarvam_tts_speaker: str = "shubh"
+    sarvam_tts_language_code: str = "en-IN"
+    sarvam_tts_sample_rate: int = 24000
+    sarvam_tts_pace: float = 1.0
+    sarvam_tts_temperature: float = 0.6
+    sarvam_tts_timeout_seconds: int = 45
 
     qdrant_url: str = "http://qdrant:6333"
     qdrant_api_key: str | None = None
