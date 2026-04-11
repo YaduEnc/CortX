@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { motion, useScroll, useTransform, useInView, AnimatePresence } from "framer-motion";
 import { useSpring, animated, useTrail, config as springConfig } from "@react-spring/web";
+import { DeviceExploded } from "./DeviceExploded";
 
 
 const globalCSS = `
@@ -10,6 +11,12 @@ const globalCSS = `
   body { background: #000; color: #fff; font-family: 'Inter', sans-serif; overflow-x: hidden; }
   a { text-decoration: none; }
   input:focus { outline: none; }
+  
+  @media (max-width: 768px) {
+    .feature-card {
+      grid-column: span 1 !important;
+    }
+  }
 `;
 
 function Nav() {
@@ -318,9 +325,8 @@ function ProblemSection() {
     <section
       ref={ref}
       style={{
-        background: "#0a0a0a",
+        background: "transparent",
         padding: "120px 2rem",
-        borderTop: "1px solid rgba(255,255,255,0.06)",
       }}
     >
       <div style={{ maxWidth: 1000, margin: "0 auto" }}>
@@ -438,9 +444,8 @@ function PipelineSection() {
     <section
       ref={ref}
       style={{
-        background: "#000",
+        background: "transparent",
         padding: "160px 2rem",
-        borderTop: "1px solid rgba(255,255,255,0.06)",
         position: "relative",
         overflow: "hidden",
       }}
@@ -572,9 +577,8 @@ function DeviceSection() {
     <section
       ref={ref}
       style={{
-        background: "#0a0a0a",
+        background: "transparent",
         padding: "160px 2rem",
-        borderTop: "1px solid rgba(255,255,255,0.06)",
         overflow: "hidden",
       }}
     >
@@ -688,9 +692,8 @@ function FeaturesSection() {
     <section
       ref={ref}
       style={{
-        background: "#0a0a0a",
+        background: "transparent",
         padding: "160px 2rem",
-        borderTop: "1px solid rgba(255,255,255,0.06)",
         position: "relative",
       }}
     >
@@ -725,56 +728,43 @@ function FeaturesSection() {
             return (
               <animated.div 
                 key={i} 
+                className="feature-card"
                 style={{
                   ...style,
                   gridColumn: isFeatured ? "span 2" : "span 1",
-                  '@media (max-width: 768px)': {
-                    gridColumn: "span 1",
-                  }
                 } as any}
               >
                 <motion.div
-                  whileHover={{ y: -5, boxShadow: "0 20px 40px rgba(0,0,0,0.5)" }}
+                  whileHover={{ y: -5 }}
                   style={{ 
                     height: "100%",
-                    padding: 40, 
-                    background: "rgba(255,255,255,0.02)", 
-                    border: "1px solid rgba(255,255,255,0.05)",
-                    borderRadius: 24,
-                    transition: "all 0.3s ease",
+                    padding: "32px 0", 
                     display: "flex",
                     flexDirection: "column",
-                    justifyContent: "space-between",
+                    justifyContent: "flex-start",
                     position: "relative",
-                    overflow: "hidden"
+                    borderTop: "1px solid rgba(255,255,255,0.1)",
+                    transition: "all 0.3s ease",
                   }}
                 >
-                  {/* Subtle gradient glow inside card */}
-                  <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "50%", background: "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, transparent 100%)", pointerEvents: "none" }} />
-                  
                   <div>
                     <div
                       style={{
-                        fontSize: 28,
+                        fontSize: 24,
                         color: "#fff",
-                        marginBottom: 24,
+                        marginBottom: 20,
                         display: "inline-flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        width: 48,
-                        height: 48,
-                        background: "rgba(255,255,255,0.08)",
-                        borderRadius: 12,
-                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.1)"
                       }}
                     >
                       {features[i].icon}
                     </div>
-                    <h3 style={{ fontSize: 22, fontWeight: 700, color: "#fff", marginBottom: 12, letterSpacing: "-0.02em" }}>
+                    <h3 style={{ fontSize: 20, fontWeight: 600, color: "#fff", marginBottom: 12, letterSpacing: "-0.02em" }}>
                       {features[i].title}
                     </h3>
                   </div>
-                  <p style={{ fontSize: 15, color: "rgba(255,255,255,0.5)", lineHeight: 1.6, marginTop: "auto" }}>
+                  <p style={{ fontSize: 14, color: "rgba(255,255,255,0.45)", lineHeight: 1.6 }}>
                     {features[i].desc}
                   </p>
                 </motion.div>
@@ -790,76 +780,101 @@ function FeaturesSection() {
 function VisionSection() {
   const ref = useRef(null);
   const isInView = useInView(ref, { once: true, margin: "-80px" });
+  const [activePhase, setActivePhase] = useState(0);
 
   const phases = [
-    { num: "01", phase: "Individuals", sub: "Students, developers, creators", desc: "Manage and amplify personal cognitive output in real time." },
-    { num: "02", phase: "Teams", sub: "Meetings, collaboration", desc: "Shared memory and insights across every team conversation." },
-    { num: "03", phase: "Organizations", sub: "Enterprise intelligence", desc: "Large-scale knowledge graphs and productivity analytics." },
+    { num: "01", phase: "Individuals", sub: "Cognitive Augmentation", desc: "A personal exoskeleton for your mind. Never lose a thought, command, or insight again." },
+    { num: "02", phase: "Teams", sub: "Shared Memory", desc: "Instantly query insights across your entire team's conversational graph. Collective intelligence." },
+    { num: "03", phase: "Organizations", sub: "Enterprise Intelligence", desc: "A foundational intelligence layer. Map institutional knowledge from the ground up." },
   ];
 
-  const leftSpring = useSpring({
-    x: isInView ? 0 : -60,
-    opacity: isInView ? 1 : 0,
-    config: { tension: 120, friction: 20 },
-  });
-
   return (
-    <section
-      ref={ref}
-      style={{
-        background: "#000",
-        padding: "120px 2rem",
-        borderTop: "1px solid rgba(255,255,255,0.06)",
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          maxWidth: 1000,
-          margin: "0 auto",
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 60,
-          alignItems: "center",
-        }}
-      >
-        <animated.div style={leftSpring}>
-          <p style={{ fontSize: 11, letterSpacing: "0.15em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)", marginBottom: 16 }}>
-            Vision
-          </p>
-          <h2 style={{ fontSize: "clamp(28px, 4vw, 48px)", fontWeight: 800, letterSpacing: "-0.04em", lineHeight: 1.1, color: "#fff", marginBottom: 24 }}>
-            Scaling human intelligence.
-          </h2>
-          <p style={{ fontSize: 15, color: "rgba(255,255,255,0.4)", lineHeight: 1.7 }}>
-            SecondMind is built for the long arc — from personal cognitive augmentation to team-level shared memory to organization-wide intelligence infrastructure.
-          </p>
-        </animated.div>
+    <section ref={ref} style={{ background: "transparent", padding: "160px 2rem", position: "relative", overflow: "hidden" }}>
+      <div style={{ maxWidth: 1100, margin: "0 auto", position: "relative", zIndex: 2 }}>
+        
+        {/* Header */}
+        <div style={{ textAlign: "center", marginBottom: 80 }}>
+          <motion.p initial={{ opacity: 0 }} animate={isInView ? { opacity: 1 } : {}} transition={{ duration: 1 }} style={{ fontSize: 12, letterSpacing: "0.2em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", marginBottom: 16 }}>
+            The Master Plan
+          </motion.p>
+          <motion.h2 initial={{ opacity: 0, y: 20 }} animate={isInView ? { opacity: 1, y: 0 } : {}} transition={{ duration: 0.8 }} style={{ fontSize: "clamp(36px, 5vw, 64px)", fontWeight: 900, letterSpacing: "-0.04em", lineHeight: 1.05, color: "#fff" }}>
+            Scaling cognitive <br />infrastructure.
+          </motion.h2>
+        </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-          {phases.map((ph, i) => (
-            <motion.div
-              key={i}
-              initial={{ opacity: 0, x: 40 }}
-              animate={isInView ? { opacity: 1, x: 0 } : {}}
-              transition={{ delay: i * 0.15, duration: 0.6 }}
-              style={{
-                padding: "24px 0",
-                borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.08)" : "none",
-                display: "flex",
-                gap: 20,
-                alignItems: "flex-start",
-              }}
-            >
-              <span style={{ fontSize: 11, color: "rgba(255,255,255,0.2)", fontWeight: 700, letterSpacing: "0.1em", minWidth: 24, marginTop: 2 }}>
-                {ph.num}
-              </span>
-              <div>
-                <p style={{ fontSize: 16, fontWeight: 700, color: "#fff", marginBottom: 4, letterSpacing: "-0.02em" }}>{ph.phase}</p>
-                <p style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 8 }}>{ph.sub}</p>
-                <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", lineHeight: 1.6 }}>{ph.desc}</p>
-              </div>
-            </motion.div>
-          ))}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(400px, 1fr))", gap: 80, alignItems: "center" }}>
+          
+          {/* Dynamic Graphic UI */}
+          <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={isInView ? { opacity: 1, scale: 1 } : {}} transition={{ duration: 1 }} style={{ height: 420, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 32, position: "relative", overflow: "hidden", display: "flex", justifyContent: "center", alignItems: "center" }}>
+             {/* Subtle internal grid */}
+             <div style={{ position: "absolute", inset: 0, backgroundImage: "radial-gradient(rgba(255,255,255,0.15) 1px, transparent 1px)", backgroundSize: "24px 24px", opacity: 0.3 }} />
+             
+             {/* Phase 1 Graphic: Single Node */}
+             <motion.div animate={{ opacity: activePhase === 0 ? 1 : 0, scale: activePhase === 0 ? 1 : 0.8 }} transition={{ duration: 0.5 }} style={{ position: "absolute", inset: 0, display: "flex", justifyContent: "center", alignItems: "center", pointerEvents: "none" }}>
+                <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 15, ease: "linear" }} style={{ width: 140, height: 140, border: "1px dashed rgba(255,255,255,0.3)", borderRadius: "50%", display: "flex", justifyContent: "center", alignItems: "center" }}>
+                   <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ repeat: Infinity, duration: 2 }} style={{ width: 32, height: 32, background: "#fff", borderRadius: "50%", boxShadow: "0 0 60px rgba(255,255,255,0.6)" }} />
+                </motion.div>
+             </motion.div>
+
+             {/* Phase 2 Graphic: Team Nodes */}
+             <motion.div animate={{ opacity: activePhase === 1 ? 1 : 0, scale: activePhase === 1 ? 1 : 0.8 }} transition={{ duration: 0.5 }} style={{ position: "absolute", inset: 0, display: "flex", justifyContent: "center", alignItems: "center", pointerEvents: "none" }}>
+                <div style={{ position: "relative", width: 200, height: 200 }}>
+                  {[0, 1, 2].map((i) => (
+                    <motion.div key={i} animate={{ y: [0, -15, 0] }} transition={{ repeat: Infinity, duration: 3, delay: i * 0.5 }} style={{ position: "absolute", top: i === 0 ? 0 : 120, left: i === 1 ? 0 : (i === 2 ? 140 : 70), width: 24, height: 24, background: "#fff", borderRadius: "50%", boxShadow: "0 0 30px rgba(255,255,255,0.4)" }} />
+                  ))}
+                  {/* Connecting core */}
+                  <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.3 }}>
+                    <line x1="82" y1="12" x2="12" y2="132" stroke="#fff" strokeWidth="2" strokeDasharray="4 4" />
+                    <line x1="82" y1="12" x2="152" y2="132" stroke="#fff" strokeWidth="2" strokeDasharray="4 4" />
+                    <line x1="12" y1="132" x2="152" y2="132" stroke="#fff" strokeWidth="2" strokeDasharray="4 4" />
+                  </svg>
+                </div>
+             </motion.div>
+
+             {/* Phase 3 Graphic: Neural Web */}
+             <motion.div animate={{ opacity: activePhase === 2 ? 1 : 0, scale: activePhase === 2 ? 1 : 0.8 }} transition={{ duration: 0.5 }} style={{ position: "absolute", inset: 0, display: "flex", justifyContent: "center", alignItems: "center", flexWrap: "wrap", gap: 30, padding: 60, pointerEvents: "none" }}>
+                {[...Array(16)].map((_, i) => (
+                  <motion.div key={i} animate={{ opacity: [0.1, 0.8, 0.1], scale: [1, 1.5, 1] }} transition={{ repeat: Infinity, duration: 2, delay: (i * 13 % 7) * 0.2 }} style={{ width: 10, height: 10, background: "#fff", borderRadius: "50%", boxShadow: "0 0 10px rgba(255,255,255,0.8)" }} />
+                ))}
+             </motion.div>
+          </motion.div>
+
+          {/* Interactive Steps List */}
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {phases.map((ph, i) => (
+              <motion.div
+                key={i}
+                initial={{ opacity: 0, x: 20 }}
+                animate={isInView ? { opacity: 1, x: 0 } : {}}
+                transition={{ delay: i * 0.15 }}
+                onClick={() => setActivePhase(i)}
+                style={{
+                  padding: "32px 0 32px 32px",
+                  borderLeft: activePhase === i ? "2px solid #fff" : "2px solid rgba(255,255,255,0.08)",
+                  cursor: "pointer",
+                  transition: "all 0.4s cubic-bezier(0.16, 1, 0.3, 1)",
+                  opacity: activePhase === i ? 1 : 0.4,
+                  transform: activePhase === i ? "translateX(10px)" : "translateX(0)",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.1em", color: activePhase === i ? "#fff" : "rgba(255,255,255,0.5)" }}>{ph.num}</span>
+                  <h3 style={{ fontSize: 26, fontWeight: 800, color: "#fff", letterSpacing: "-0.03em" }}>{ph.phase}</h3>
+                </div>
+                
+                {/* Expandable content area */}
+                <div style={{ overflow: "hidden", display: "grid", gridTemplateRows: activePhase === i ? "1fr" : "0fr", transition: "grid-template-rows 0.4s cubic-bezier(0.16, 1, 0.3, 1)" }}>
+                  <div style={{ minHeight: 0 }}>
+                    <div style={{ marginTop: 12 }}>
+                      <p style={{ fontSize: 12, letterSpacing: "0.1em", textTransform: "uppercase", color: "#4CAF50", marginBottom: 12, fontWeight: 700 }}>{ph.sub}</p>
+                      <p style={{ fontSize: 15, color: "rgba(255,255,255,0.6)", lineHeight: 1.6, maxWidth: 380 }}>{ph.desc}</p>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+
         </div>
       </div>
     </section>
@@ -880,9 +895,8 @@ function CTA() {
     <section
       ref={ref}
       style={{
-        background: "#000",
+        background: "transparent",
         padding: "140px 2rem",
-        borderTop: "1px solid rgba(255,255,255,0.06)",
         textAlign: "center",
         position: "relative",
         overflow: "hidden",
@@ -1111,7 +1125,7 @@ export default function App() {
   }, []);
 
   return (
-    <div style={{ background: "#000", minHeight: "100vh", position: "relative", color: "#fff", overflowX: "hidden" }}>
+    <div style={{ background: "#000", minHeight: "100vh", position: "relative", color: "#fff", overflowX: "clip" }}>
       
       {/* Ambient Neural Background */}
       <div 
@@ -1123,7 +1137,7 @@ export default function App() {
           background: `radial-gradient(circle at ${mousePos.x}px ${mousePos.y}px, rgba(255,255,255,0.03) 0%, transparent 40%)`
         }} 
       />
-      <div style={{ position: "fixed", inset: 0, zIndex: 0, opacity: 0.1, backgroundImage: "url('https://grainy-gradients.vercel.app/noise.svg')", pointerEvents: "none" }} />
+      <div style={{ position: "fixed", inset: 0, zIndex: 0, opacity: 0.1, backgroundImage: "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E\")", pointerEvents: "none" }} />
       
       <div style={{ position: "relative", zIndex: 1 }}>
         <Nav />
@@ -1131,7 +1145,7 @@ export default function App() {
         <div id="how-it-works">
           <ProblemSection />
           <PipelineSection />
-          <DeviceSection />
+          <DeviceExploded />
         </div>
         <div id="features">
           <FeaturesSection />
