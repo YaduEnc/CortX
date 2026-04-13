@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { motion, useScroll, useTransform, useInView, AnimatePresence } from "framer-motion";
 import { useSpring, animated, useTrail, config as springConfig } from "@react-spring/web";
+import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { DeviceExploded } from "./DeviceExploded";
 import { KnowledgeGraph } from "./KnowledgeGraph";
 
@@ -20,14 +21,269 @@ const globalCSS = `
   }
 `;
 
+const technologyLinks = [
+  { label: "Architecture", path: "/architecture" },
+  { label: "Security", path: "/security" },
+  { label: "Open Source", path: "/open-source" },
+  { label: "Whisper v3", path: "/whisper-v3" },
+];
+
+const companyLinks = [
+  { label: "About", path: "/about" },
+  { label: "Privacy Policy", path: "/privacy-policy" },
+  { label: "Terms of Service", path: "/terms-of-service" },
+  { label: "Contact", path: "/contact" },
+];
+
+type DocSection = {
+  heading: string;
+  body: string;
+  bullets?: string[];
+};
+
+type DocPageContent = {
+  eyebrow: string;
+  title: string;
+  subtitle: string;
+  lead: string;
+  sections: DocSection[];
+};
+
+const docPages: Record<string, DocPageContent> = {
+  "/architecture": {
+    eyebrow: "Technology",
+    title: "Architecture",
+    subtitle: "From spoken capture to structured memory, the system is designed as a deterministic pipeline rather than a black box.",
+    lead: "SecondMind links hardware capture, mobile relay, backend processing, and memory retrieval into one operational stack. Every layer has one job: capture reliably, structure accurately, and return useful context fast.",
+    sections: [
+      {
+        heading: "Capture layer",
+        body: "The wearable records short audio windows through the onboard microphone stack and streams them through BLE to the mobile app. The device is optimized for low-friction capture rather than on-device inference.",
+        bullets: [
+          "Low-latency BLE relay to the companion app",
+          "Authenticated device-to-app pairing",
+          "Short capture windows designed for continuous use",
+        ],
+      },
+      {
+        heading: "Transport and ingestion",
+        body: "The app relays capture packets to the CortX API over authenticated channels. The ingestion layer timestamps, normalizes, and stores raw audio references before downstream AI jobs begin.",
+        bullets: [
+          "Device identity attached to every upload",
+          "Session-aware capture tracking",
+          "Separation between transport, storage, and AI jobs",
+        ],
+      },
+      {
+        heading: "AI structuring pipeline",
+        body: "Transcripts move through extraction workers that classify ideas, tasks, reminders, decisions, entities, and action intents. Structured outputs are persisted separately from the raw transcript so retrieval can operate on meaning, not just text search.",
+        bullets: [
+          "Transcript generation",
+          "Structured memory extraction",
+          "Action detection and drafting",
+          "Daily summaries and derived views",
+        ],
+      },
+      {
+        heading: "Retrieval surface",
+        body: "The app answers user queries by reading structured memory tables and relevant transcript evidence together. The result is a memory system that can answer, summarize, and trigger action instead of acting like a passive archive.",
+      },
+    ],
+  },
+  "/security": {
+    eyebrow: "Technology",
+    title: "Security",
+    subtitle: "Security is treated as an infrastructure concern, not a marketing feature.",
+    lead: "The system is being built around private capture, authenticated device flows, and backend-controlled privileged access. The practical goal is simple: no service keys in client code, explicit ownership boundaries, and traceable processing.",
+    sections: [
+      {
+        heading: "Device and app boundaries",
+        body: "Devices authenticate with backend-issued credentials. The companion app operates as an authenticated client but does not carry privileged backend secrets needed for administrative storage or system-level writes.",
+        bullets: [
+          "Pairing and device auth are explicit",
+          "Privileged access is backend-only",
+          "User-scoped data paths stay separated from device registration",
+        ],
+      },
+      {
+        heading: "Data handling",
+        body: "Audio, transcripts, and derived memory objects are persisted as separate layers so access policies and retention can be controlled with more granularity. This also limits broad, unnecessary access to raw data during retrieval.",
+        bullets: [
+          "Raw capture references kept distinct from structured memory",
+          "User-scoped memory tables",
+          "Pipeline job visibility and retry status tracked server-side",
+        ],
+      },
+      {
+        heading: "Operational posture",
+        body: "The backend is designed around private buckets, server-mediated privileged operations, and observability on pipeline states such as receiving, transcribing, structuring, and failure recovery.",
+      },
+    ],
+  },
+  "/open-source": {
+    eyebrow: "Technology",
+    title: "Open Source",
+    subtitle: "SecondMind is built on an open systems stack even where the product experience itself remains tightly integrated.",
+    lead: "The current platform uses a mix of open-source foundations and product-specific orchestration. The philosophy is to avoid hidden dependencies where a proven open stack can do the job.",
+    sections: [
+      {
+        heading: "Core building blocks",
+        body: "The product stack already relies on open components across firmware, mobile, frontend, backend, and AI infrastructure.",
+        bullets: [
+          "ESP32 firmware for device capture",
+          "Flutter for cross-platform mobile",
+          "React and Three.js for the web experience",
+          "FastAPI workers and service orchestration",
+          "Whisper-based speech transcription",
+        ],
+      },
+      {
+        heading: "Why this matters",
+        body: "An open stack improves inspection, iteration speed, and replaceability. It reduces vendor lock-in at the infrastructure layer while still allowing the product layer to evolve quickly.",
+      },
+      {
+        heading: "Roadmap",
+        body: "As the system matures, the open-source boundary should become clearer: commodity infrastructure stays open and portable, while tightly coupled orchestration and product intelligence can remain product-owned where that creates leverage.",
+      },
+    ],
+  },
+  "/whisper-v3": {
+    eyebrow: "Technology",
+    title: "Whisper v3",
+    subtitle: "Speech-to-text is not the product by itself, but it is the quality gate for everything built on top of memory.",
+    lead: "SecondMind uses Whisper-class transcription as the first semantic step after capture. The transcript layer must be stable enough to support tasks, ideas, decisions, entities, and later retrieval without collapsing under noisy speech.",
+    sections: [
+      {
+        heading: "Role in the pipeline",
+        body: "Whisper v3 class models convert captured speech into timestamped text before extraction jobs run. This layer is designed to preserve natural speech rather than forcing users into rigid command syntax.",
+      },
+      {
+        heading: "Why it matters",
+        body: "If transcript quality fails, every downstream memory object degrades with it. That is why the speech layer is treated as infrastructure: accuracy, multilingual tolerance, and robustness matter more than flashy output.",
+        bullets: [
+          "Natural language capture instead of command mode",
+          "Strong baseline for multilingual and accented speech",
+          "Better downstream extraction quality",
+        ],
+      },
+      {
+        heading: "What comes after speech",
+        body: "The transcript is only the input. SecondMind then structures it into memory objects, action drafts, summaries, and queryable context. The value is in the transformation, not just the transcript dump.",
+      },
+    ],
+  },
+  "/about": {
+    eyebrow: "Company",
+    title: "About",
+    subtitle: "SecondMind is building a memory operating system for people who think faster than traditional tools can capture.",
+    lead: "The company thesis is direct: voice notes, transcripts, and note apps still leave too much cognitive work on the user. The system should capture reality as you speak, structure it automatically, and return useful answers later.",
+    sections: [
+      {
+        heading: "What we are building",
+        body: "SecondMind combines hardware capture, mobile relay, AI structuring, and memory retrieval into a single product. The result is closer to cognitive infrastructure than to a note-taking app.",
+      },
+      {
+        heading: "Who it is for",
+        body: "The first strong fit is people whose thinking happens in motion: founders, operators, researchers, builders, and students who produce raw insight faster than they can organize it manually.",
+      },
+      {
+        heading: "Product direction",
+        body: "The product is moving toward a full memory layer: tasks, decisions, ideas, people, follow-ups, daily summaries, and action-ready communication - all linked to the context that produced them.",
+      },
+    ],
+  },
+  "/privacy-policy": {
+    eyebrow: "Company",
+    title: "Privacy Policy",
+    subtitle: "This page explains, at a product level, what information the system handles and why.",
+    lead: "SecondMind processes audio captures, transcript text, structured memory objects, and account-level metadata needed to run the service. The system is intended to minimize privileged client-side access and keep sensitive operations on the backend.",
+    sections: [
+      {
+        heading: "Information handled",
+        body: "The platform may process account identity, paired device identifiers, uploaded audio, transcripts, structured memory outputs, action drafts, and operational metadata such as timestamps and job status.",
+      },
+      {
+        heading: "Why data is used",
+        body: "Data is used to authenticate devices, relay captures, transcribe speech, extract structured memory, answer user queries, generate summaries, and surface action-oriented results inside the app.",
+      },
+      {
+        heading: "Storage and retention",
+        body: "Storage policy is being designed around private storage, backend-only privileged access, and explicit user-scoped data ownership. Retention and deletion policies should be reviewed before broad public rollout.",
+      },
+      {
+        heading: "User control",
+        body: "Users should be able to manage account-level data, paired devices, and derived memory records through the app and backend controls as the platform matures.",
+      },
+    ],
+  },
+  "/terms-of-service": {
+    eyebrow: "Company",
+    title: "Terms of Service",
+    subtitle: "These terms describe the operating rules for accessing the current product experience.",
+    lead: "SecondMind is an evolving product. By using the service, users agree to use the system lawfully, protect their account credentials, and understand that features, limits, and availability may change as the platform develops.",
+    sections: [
+      {
+        heading: "Access and accounts",
+        body: "Users are responsible for maintaining control over their account and device credentials. Access may be suspended or revoked if the service is abused, attacked, or used in ways that threaten platform stability or user safety.",
+      },
+      {
+        heading: "Acceptable use",
+        body: "The platform may not be used for unlawful surveillance, impersonation, credential abuse, or any behavior that interferes with the service or other users.",
+      },
+      {
+        heading: "Product evolution",
+        body: "Because the platform is under active development, capabilities may change, features may be added or removed, and availability is not guaranteed at all times.",
+      },
+      {
+        heading: "Liability boundary",
+        body: "Users should not treat generated summaries, drafts, or structured outputs as guaranteed factual records without review. The system is intended to assist memory and action, not replace judgment.",
+      },
+    ],
+  },
+  "/contact": {
+    eyebrow: "Company",
+    title: "Contact",
+    subtitle: "For pilots, partnerships, research, and early access, use the product entry points already built into the site.",
+    lead: "SecondMind is currently best reached through the early-access flow. That keeps inbound requests attached to product intent instead of scattering them across disconnected channels.",
+    sections: [
+      {
+        heading: "Early access",
+        body: "If you want to test the system, use the request access flow on the homepage. Include your role, use case, and what you want the memory layer to solve.",
+      },
+      {
+        heading: "Partnerships and pilots",
+        body: "Hardware pilots, founder workflows, research collaborations, and product design partnerships are easier to evaluate when the request includes the environment, scale, and expected capture pattern.",
+      },
+      {
+        heading: "Security or privacy issues",
+        body: "If you need to report a security or privacy concern, use the same contact path and mark the request clearly so it can be handled separately from general access requests.",
+      },
+    ],
+  },
+};
+
 function Nav() {
   const [scrolled, setScrolled] = useState(false);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const isHome = location.pathname === "/";
 
   useEffect(() => {
     const fn = () => setScrolled(window.scrollY > 40);
     window.addEventListener("scroll", fn);
     return () => window.removeEventListener("scroll", fn);
   }, []);
+
+  const scrollToSection = (id: string) => {
+    if (!isHome) {
+      navigate("/");
+      window.setTimeout(() => {
+        document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+      }, 80);
+      return;
+    }
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+  };
 
   const navSpring = useSpring({
     background: scrolled ? "rgba(0,0,0,0.85)" : "rgba(0,0,0,0)",
@@ -59,7 +315,13 @@ function Nav() {
         animate={{ opacity: 1, x: 0 }}
         transition={{ duration: 0.6 }}
         style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }}
-        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+        onClick={() => {
+          if (!isHome) {
+            navigate("/");
+            return;
+          }
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }}
       >
         <img 
           src="/logo.png" 
@@ -89,15 +351,18 @@ function Nav() {
           { name: "Features", id: "features" },
           { name: "Vision", id: "vision" }
         ].map((l) => (
-          <a
+          <button
             key={l.id}
-            href={`#${l.id}`}
             style={{
               color: "rgba(255,255,255,0.5)",
               fontSize: 13,
               fontWeight: 500,
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
               transition: "color 0.2s, transform 0.2s",
             }}
+            onClick={() => scrollToSection(l.id)}
             onMouseEnter={(e) => {
               (e.target as HTMLElement).style.color = "#fff";
               (e.target as HTMLElement).style.transform = "translateY(-1px)";
@@ -108,7 +373,7 @@ function Nav() {
             }}
           >
             {l.name}
-          </a>
+          </button>
         ))}
         <motion.button
           whileHover={{ scale: 1.05, boxShadow: "0 0 20px rgba(255,255,255,0.1)" }}
@@ -124,7 +389,7 @@ function Nav() {
             cursor: "pointer",
             letterSpacing: "-0.01em",
           }}
-          onClick={() => document.getElementById("cta")?.scrollIntoView({ behavior: "smooth" })}
+          onClick={() => scrollToSection("cta")}
         >
           Get access
         </motion.button>
@@ -159,6 +424,127 @@ function DecryptText({ text }: { text: string }) {
   }, [text]);
 
   return <>{displayedText}</>;
+}
+
+function HomePage({
+  mousePos,
+}: {
+  mousePos: { x: number; y: number };
+}) {
+  return (
+    <div style={{ background: "#000", minHeight: "100vh", position: "relative", color: "#fff", overflowX: "clip" }}>
+      <KnowledgeGraph />
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          zIndex: 0,
+          pointerEvents: "none",
+          background: `radial-gradient(circle at ${mousePos.x}px ${mousePos.y}px, rgba(255,255,255,0.03) 0%, transparent 40%)`
+        }}
+      />
+
+      <div style={{ position: "relative", zIndex: 1 }}>
+        <Nav />
+        <Hero />
+        <div id="how-it-works">
+          <ProblemSection />
+          <PipelineSection />
+          <DeviceExploded />
+        </div>
+        <div id="features">
+          <FeaturesSection />
+        </div>
+        <div id="vision">
+          <VisionSection />
+        </div>
+        <div id="cta">
+          <CTA />
+        </div>
+        <Footer />
+      </div>
+    </div>
+  );
+}
+
+function DocumentPage({ content }: { content: DocPageContent }) {
+  return (
+    <div style={{ background: "#000", minHeight: "100vh", color: "#fff", position: "relative", overflowX: "clip" }}>
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          pointerEvents: "none",
+          background: "radial-gradient(circle at 15% 20%, rgba(98, 154, 255, 0.12) 0%, transparent 30%), radial-gradient(circle at 82% 12%, rgba(255,255,255,0.08) 0%, transparent 24%), linear-gradient(180deg, rgba(255,255,255,0.02) 0%, rgba(0,0,0,0) 24%)",
+          zIndex: 0,
+        }}
+      />
+      <div style={{ position: "relative", zIndex: 1 }}>
+        <Nav />
+        <main style={{ maxWidth: 1180, margin: "0 auto", padding: "140px 2.5rem 0" }}>
+          <section style={{ padding: "0 0 64px", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 10, marginBottom: 20, padding: "8px 14px", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 999, background: "rgba(255,255,255,0.03)" }}>
+              <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#7ba8ff", boxShadow: "0 0 18px rgba(123,168,255,0.65)" }} />
+              <span style={{ fontSize: 11, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(255,255,255,0.55)", fontWeight: 700 }}>{content.eyebrow}</span>
+            </div>
+            <h1 style={{ fontSize: "clamp(52px, 8vw, 108px)", lineHeight: 0.95, letterSpacing: "-0.055em", fontWeight: 900, maxWidth: 900 }}>{content.title}</h1>
+            <p style={{ marginTop: 22, maxWidth: 760, fontSize: "clamp(18px, 2vw, 22px)", lineHeight: 1.5, color: "rgba(255,255,255,0.52)" }}>{content.subtitle}</p>
+          </section>
+
+          <section style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.2fr) minmax(280px, 0.8fr)", gap: 56, padding: "56px 0 80px" }}>
+            <div>
+              <p style={{ fontSize: 18, lineHeight: 1.8, color: "rgba(255,255,255,0.76)", maxWidth: 760 }}>{content.lead}</p>
+            </div>
+            <div style={{ alignSelf: "start", padding: "22px 24px", borderRadius: 20, background: "linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.02) 100%)", border: "1px solid rgba(255,255,255,0.08)" }}>
+              <div style={{ fontSize: 11, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(255,255,255,0.35)", marginBottom: 14 }}>Document structure</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {content.sections.map((section, index) => (
+                  <div key={section.heading} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                    <span style={{ color: "#7ba8ff", fontWeight: 700, fontSize: 13, minWidth: 20 }}>{String(index + 1).padStart(2, "0")}</span>
+                    <span style={{ color: "rgba(255,255,255,0.72)", fontSize: 14, lineHeight: 1.5 }}>{section.heading}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <section style={{ display: "flex", flexDirection: "column", gap: 40, paddingBottom: 100 }}>
+            {content.sections.map((section, index) => (
+              <section key={section.heading} style={{ display: "grid", gridTemplateColumns: "180px minmax(0, 1fr)", gap: 36, paddingTop: 28, borderTop: index === 0 ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(255,255,255,0.06)" }}>
+                <div style={{ fontSize: 12, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(255,255,255,0.28)", fontWeight: 700, paddingTop: 8 }}>
+                  {section.heading}
+                </div>
+                <div>
+                  <p style={{ fontSize: 17, lineHeight: 1.85, color: "rgba(255,255,255,0.8)", maxWidth: 800 }}>{section.body}</p>
+                  {section.bullets && (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 18, marginTop: 28 }}>
+                      {section.bullets.map((bullet) => (
+                        <div key={bullet} style={{ padding: "18px 20px", borderRadius: 18, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" }}>
+                          <div style={{ width: 30, height: 1, background: "rgba(123,168,255,0.8)", marginBottom: 14 }} />
+                          <p style={{ fontSize: 15, lineHeight: 1.65, color: "rgba(255,255,255,0.72)" }}>{bullet}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+            ))}
+          </section>
+
+          <section style={{ marginBottom: 96, padding: "34px 0 0", borderTop: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 24, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 11, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(255,255,255,0.35)", marginBottom: 10 }}>Next step</div>
+              <p style={{ fontSize: 18, lineHeight: 1.6, color: "rgba(255,255,255,0.78)", maxWidth: 620 }}>Go back to the landing page and request access if you want to see the full hardware, app, and memory stack in action.</p>
+            </div>
+            <Link to="/" style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "15px 28px", borderRadius: 12, background: "#fff", color: "#000", fontWeight: 700, fontSize: 14, letterSpacing: "-0.01em" }}>
+              Return to homepage
+            </Link>
+          </section>
+        </main>
+        <Footer />
+      </div>
+    </div>
+  );
 }
 
 function Hero() {
@@ -561,114 +947,6 @@ function PipelineSection() {
   );
 }
 
-function DeviceSection() {
-  const ref = useRef(null);
-  const isInView = useInView(ref, { once: true, margin: "-100px" });
-  
-  const nodes = [
-    { label: "BLE 5.0", detail: "Ultra-low power audio streaming.", x: 20, y: 30 },
-    { label: "Dual MEMS", detail: "Beamforming noise cancellation.", x: 80, y: 25 },
-    { label: "Tap Surface", detail: "Capacitive touch command logic.", x: 50, y: 80 },
-    { label: "S3 Core", detail: "240MHz AI-accelerated compute.", x: 15, y: 70 },
-  ];
-
-  const [activeNode, setActiveNode] = useState(0);
-
-  return (
-    <section
-      ref={ref}
-      style={{
-        background: "transparent",
-        padding: "160px 2rem",
-        overflow: "hidden",
-      }}
-    >
-      <div style={{ maxWidth: 1100, margin: "0 auto", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 80, alignItems: "center" }}>
-        
-        {/* Hardware Visual */}
-        <div style={{ position: "relative", height: 500, background: "radial-gradient(circle at 50% 50%, rgba(255,255,255,0.03) 0%, transparent 70%)", borderRadius: 24, border: "1px solid rgba(255,255,255,0.03)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-          
-          {/* Blueprint Grid */}
-          <div style={{ position: "absolute", inset: 0, opacity: 0.1, backgroundImage: "radial-gradient(rgba(255,255,255,0.2) 1px, transparent 1px)", backgroundSize: "20px 20px" }} />
-
-          {/* Main Device Body (Image) */}
-          <motion.div
-            animate={isInView ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.9 }}
-            transition={{ duration: 1.2, ease: [0.22, 1, 0.36, 1] }}
-            style={{ width: 200, height: 400, position: "relative", display: "flex", justifyContent: "center", alignItems: "center" }}
-          >
-            <img 
-              src="/deviceimage.jpeg" 
-              alt="CortX Wearable" 
-              style={{ width: "100%", height: "100%", objectFit: "contain", filter: "invert(1) drop-shadow(0 0 30px rgba(255,255,255,0.1))", mixBlendMode: "screen", opacity: 0.9 }} 
-            />
-
-            {/* Hotspots */}
-            {nodes.map((node, i) => (
-              <motion.div
-                key={i}
-                onClick={() => setActiveNode(i)}
-                style={{
-                  position: "absolute",
-                  left: `${node.x}%`,
-                  top: `${node.y}%`,
-                  width: 12,
-                  height: 12,
-                  background: activeNode === i ? "#fff" : "transparent",
-                  border: "1px solid #fff",
-                  borderRadius: "50%",
-                  cursor: "pointer",
-                  zIndex: 10,
-                }}
-              >
-                <motion.div
-                  animate={{ scale: [1, 2.5, 1], opacity: [0.5, 0, 0.5] }}
-                  transition={{ repeat: Infinity, duration: 2 }}
-                  style={{ position: "absolute", inset: -1, border: "1px solid #fff", borderRadius: "50%" }}
-                />
-              </motion.div>
-            ))}
-          </motion.div>
-        </div>
-
-        {/* Copy */}
-        <div style={{ textAlign: "left" }}>
-          <motion.p
-            initial={{ opacity: 0, x: 20 }}
-            animate={isInView ? { opacity: 1, x: 0 } : {}}
-            style={{ fontSize: 12, letterSpacing: "0.2em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", marginBottom: 16 }}
-          >
-            Tactile Intelligence
-          </motion.p>
-          <motion.h2
-            initial={{ opacity: 0, x: 20 }}
-            animate={isInView ? { opacity: 1, x: 0 } : {}}
-            transition={{ delay: 0.1 }}
-            style={{ fontSize: "clamp(32px, 4vw, 56px)", fontWeight: 900, letterSpacing: "-0.04em", color: "#fff", marginBottom: 32, lineHeight: 1 }}
-          >
-            Wearable<br />Compute.
-          </motion.h2>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
-            {nodes.map((node, i) => (
-              <motion.div
-                key={i}
-                initial={{ opacity: 0 }}
-                animate={isInView ? { opacity: activeNode === i ? 1 : 0.3 } : {}}
-                style={{ cursor: "pointer", transition: "opacity 0.3s" }}
-                onClick={() => setActiveNode(i)}
-              >
-                <h4 style={{ fontSize: 18, fontWeight: 700, color: "#fff", marginBottom: 4, letterSpacing: "-0.02em" }}>{node.label}</h4>
-                <p style={{ fontSize: 14, color: "rgba(255,255,255,0.5)", lineHeight: 1.6 }}>{node.detail}</p>
-              </motion.div>
-            ))}
-          </div>
-        </div>
-
-      </div>
-    </section>
-  );
-}
 function FeaturesSection() {
   const ref = useRef(null);
   const isInView = useInView(ref, { once: true, margin: "-80px" });
@@ -1066,16 +1344,16 @@ function Footer() {
           <div>
             <h4 style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)", marginBottom: 20 }}>Technology</h4>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {["Architecture", "Security", "Open Source", "Whisper v3"].map(l => (
-                <a key={l} href="#" style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", transition: "color 0.2s" }} onMouseEnter={e => (e.target as HTMLElement).style.color = "#fff"} onMouseLeave={e => (e.target as HTMLElement).style.color = "rgba(255,255,255,0.5)"}>{l}</a>
+              {technologyLinks.map((l) => (
+                <Link key={l.path} to={l.path} style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", transition: "color 0.2s" }} onMouseEnter={e => (e.target as HTMLElement).style.color = "#fff"} onMouseLeave={e => (e.target as HTMLElement).style.color = "rgba(255,255,255,0.5)"}>{l.label}</Link>
               ))}
             </div>
           </div>
           <div>
             <h4 style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)", marginBottom: 20 }}>Company</h4>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {["About", "Privacy Policy", "Terms of Service", "Contact"].map(l => (
-                <a key={l} href="#" style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", transition: "color 0.2s" }} onMouseEnter={e => (e.target as HTMLElement).style.color = "#fff"} onMouseLeave={e => (e.target as HTMLElement).style.color = "rgba(255,255,255,0.5)"}>{l}</a>
+              {companyLinks.map((l) => (
+                <Link key={l.path} to={l.path} style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", transition: "color 0.2s" }} onMouseEnter={e => (e.target as HTMLElement).style.color = "#fff"} onMouseLeave={e => (e.target as HTMLElement).style.color = "rgba(255,255,255,0.5)"}>{l.label}</Link>
               ))}
             </div>
           </div>
@@ -1126,41 +1404,11 @@ export default function App() {
   }, []);
 
   return (
-    <div style={{ background: "#000", minHeight: "100vh", position: "relative", color: "#fff", overflowX: "clip" }}>
-      
-      {/* The 3D Ambient Knowledge Graph representing SecondMind's Matrix */}
-      <KnowledgeGraph />
-      
-      {/* Subtle cursor gradient overlay */}
-      <div 
-        style={{ 
-          position: "fixed", 
-          inset: 0, 
-          zIndex: 0, 
-          pointerEvents: "none",
-          background: `radial-gradient(circle at ${mousePos.x}px ${mousePos.y}px, rgba(255,255,255,0.03) 0%, transparent 40%)`
-        }} 
-      />
-      
-      <div style={{ position: "relative", zIndex: 1 }}>
-        <Nav />
-        <Hero />
-        <div id="how-it-works">
-          <ProblemSection />
-          <PipelineSection />
-          <DeviceExploded />
-        </div>
-        <div id="features">
-          <FeaturesSection />
-        </div>
-        <div id="vision">
-          <VisionSection />
-        </div>
-        <div id="cta">
-          <CTA />
-        </div>
-        <Footer />
-      </div>
-    </div>
+    <Routes>
+      <Route path="/" element={<HomePage mousePos={mousePos} />} />
+      {Object.entries(docPages).map(([path, content]) => (
+        <Route key={path} path={path} element={<DocumentPage content={content} />} />
+      ))}
+    </Routes>
   );
 }

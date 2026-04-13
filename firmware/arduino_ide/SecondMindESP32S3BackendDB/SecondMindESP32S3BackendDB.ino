@@ -46,7 +46,7 @@ const char* WIFI_PASSWORD = "0000110000";
 const char* API_BASE_URL = "https://hamza.yaduraj.me/v1";
 const char* DEVICE_CODE = "shashwat";
 const char* DEVICE_SECRET = "1234567890";
-const char* DEVICE_BLE_NAME = "Yaduraj";
+const char* DEVICE_BLE_NAME = "CortX";
 
 const int SAMPLE_RATE = 16000;
 const int CHANNELS = 1;

@@ -1,6 +1,6 @@
 import React, { useRef, useMemo, useEffect } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { Environment, RoundedBox, useTexture, Decal, MeshTransmissionMaterial } from "@react-three/drei";
+import { Environment, RoundedBox, useTexture, Decal } from "@react-three/drei";
 import * as THREE from "three";
 import { motion, useScroll, useTransform } from "framer-motion";
 
@@ -165,7 +165,7 @@ function DetailedDeviceModel({ scrollRef }: { scrollRef: React.MutableRefObject<
 
         <mesh position={[0.92, 0.5, 0]}>
            <boxGeometry args={[0.06, 0.6, 0.12]} />
-           <meshStandardMaterial color="#111" roughness={0.2} metalness={0.9} clearcoat={1.0} />
+           <meshPhysicalMaterial color="#111" roughness={0.2} metalness={0.9} clearcoat={1.0} />
         </mesh>
 
         <mesh position={[-0.6, 1.5, 0.18]} rotation={[Math.PI/2, 0, 0]}>
@@ -185,7 +185,7 @@ function DetailedDeviceModel({ scrollRef }: { scrollRef: React.MutableRefObject<
         </RoundedBox>
 
         <RoundedBox args={[0.6, 0.8, 0.08]} radius={0.02} position={[0, 0.6, 0.04]}>
-          <meshStandardMaterial color="#c0c0c0" roughness={0.3} metalness={0.9} clearcoat={0.5} />
+          <meshPhysicalMaterial color="#c0c0c0" roughness={0.3} metalness={0.9} clearcoat={0.5} />
         </RoundedBox>
 
         <mesh position={[0, -0.4, 0.03]}>
@@ -196,7 +196,7 @@ function DetailedDeviceModel({ scrollRef }: { scrollRef: React.MutableRefObject<
         {[-0.5, 0.5].map(x => (
           <mesh key={`mic-${x}`} position={[x, 1.4, 0.04]}>
              <boxGeometry args={[0.12, 0.12, 0.06]} />
-             <meshStandardMaterial color="#d4af37" metalness={1} roughness={0.2} clearcoat={1} />
+             <meshPhysicalMaterial color="#d4af37" metalness={1} roughness={0.2} clearcoat={1} />
              <mesh position={[0, 0, 0.031]}>
                 <circleGeometry args={[0.02, 16]} />
                 <meshBasicMaterial color="#000" />

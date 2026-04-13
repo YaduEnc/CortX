@@ -1,4 +1,4 @@
-import React, { useRef, useMemo, useEffect } from 'react';
+import { useRef, useMemo, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
@@ -132,15 +132,15 @@ function Network() {
     <group>
       <points ref={pointsRef}>
         <bufferGeometry>
-          <bufferAttribute attach="attributes-position" count={PARTICLE_COUNT} array={positions} itemSize={3} />
+          <bufferAttribute attach="attributes-position" args={[positions, 3]} count={PARTICLE_COUNT} array={positions} itemSize={3} />
         </bufferGeometry>
         {/* Made nodes much dimmer so they don't block text */}
         <pointsMaterial color="#ffffff" size={0.03} transparent opacity={0.3} blending={THREE.AdditiveBlending} depthWrite={false} />
       </points>
       <lineSegments ref={linesRef}>
         <bufferGeometry>
-          <bufferAttribute attach="attributes-position" count={6000} array={linePositions} itemSize={3} usage={THREE.DynamicDrawUsage} />
-          <bufferAttribute attach="attributes-color" count={6000} array={lineColors} itemSize={3} usage={THREE.DynamicDrawUsage} />
+          <bufferAttribute attach="attributes-position" args={[linePositions, 3]} count={6000} array={linePositions} itemSize={3} usage={THREE.DynamicDrawUsage} />
+          <bufferAttribute attach="attributes-color" args={[lineColors, 3]} count={6000} array={lineColors} itemSize={3} usage={THREE.DynamicDrawUsage} />
         </bufferGeometry>
         {/* Line completely transparent out of the box, relies purely on additive vertex color */}
         <lineBasicMaterial vertexColors transparent opacity={0.6} blending={THREE.AdditiveBlending} depthWrite={false} />

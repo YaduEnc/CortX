@@ -9,11 +9,11 @@
 #define API_BASE_URL "https://hamza.yaduraj.me/v1"
 
 // Device credentials (created via POST /v1/device/register)
-#define DEVICE_CODE "manu"
+#define DEVICE_CODE "shashwat"
 #define DEVICE_SECRET "1234567890"
 
 // Device identity visible in BLE
-#define DEVICE_BLE_NAME "SecondMind"
+#define DEVICE_BLE_NAME "CortX"
 
 // GPIO
 // Set to -1 to disable hardware pairing button in testing.
@@ -35,6 +35,10 @@
 #define SAMPLE_RATE_HZ 16000
 #define SAMPLE_BITS 16
 #define CHANNELS 1
+#define BLE_AUDIO_PACKET_PCM_BYTES 320  // 10ms @ 16kHz mono 16-bit
+#define AUDIO_ENABLE_DC_BLOCK 1
+#define AUDIO_DC_BLOCK_R 0.995f
+#define AUDIO_GAIN 8.0f
 #define CHUNK_DURATION_MS 2000
 #define CAPTURE_CHUNKS_PER_SESSION 3
 

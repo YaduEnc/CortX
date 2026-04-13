@@ -13,35 +13,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
-// ============================================================================
-// CONFIG
-// ============================================================================
-#define WIFI_SSID "Yadu Phone"
-#define WIFI_PASSWORD "0000110000"
-#define API_BASE_URL "https://hamza.yaduraj.me/v1"
+#include "config.h"
 
-#define DEVICE_CODE "lodu"
-#define DEVICE_SECRET "1234567890"
-#define DEVICE_BLE_NAME "GanduDevice"
-
-#define PAIR_BUTTON_PIN -1
-
-#define MIC_MODE_PDM 1
-#define I2S_BCLK_PIN -1
-#define I2S_WS_PIN 42
-#define I2S_DATA_IN_PIN 41
-
-#define SAMPLE_RATE_HZ 8000
-#define SAMPLE_BITS 16
-#define CHANNELS 1
-#define BLE_AUDIO_PACKET_PCM_BYTES 160  // 10ms @ 8kHz mono 16-bit
-
-#define AUDIO_ENABLE_DC_BLOCK 1
-#define AUDIO_DC_BLOCK_R 0.995f
-#define AUDIO_GAIN 8.0f
-
-#define TEST_MODE_AUTO_PAIR_ON_BOOT true
-
+// Note: Values are now loaded from config.h
 // ============================================================================
 // UUIDs
 // ============================================================================
