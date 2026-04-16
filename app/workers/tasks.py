@@ -28,6 +28,7 @@ from app.services.memory_card_summary import (
 )
 from app.services.memory_linking import suggest_memory_links_for_session
 from app.services.transcriber import get_transcriber
+from app.services.translation import needs_translation, translate_to_english, translate_segments
 from app.services.embeddings import get_embeddings
 from app.services.vector_store import get_vector_store
 from app.utils.time import utc_now
@@ -73,32 +74,62 @@ def process_session_transcription(self, session_id: str) -> dict:
             transcriber = get_transcriber()
             result = transcriber.transcribe(tmp.name)
 
+        # --- Translation: Convert non-English transcripts to English ---
+        raw_full_text = result.get("full_text", "")
+        detected_language = result.get("language")
+        translated = False
+
+        if needs_translation(detected_language, raw_full_text):
+            logger.info(
+                "Translating transcript to English: detected_language=%s text_len=%d session=%s",
+                detected_language,
+                len(raw_full_text),
+                session_id,
+            )
+            english_full_text = translate_to_english(raw_full_text, detected_language)
+            english_segments = translate_segments(result.get("segments", []), detected_language)
+            translated = True
+            logger.info(
+                "Translation complete: original_len=%d english_len=%d session=%s",
+                len(raw_full_text),
+                len(english_full_text),
+                session_id,
+            )
+        else:
+            english_full_text = raw_full_text
+            english_segments = result.get("segments", [])
+
         transcript = db.scalar(select(Transcript).where(Transcript.session_id == session.id))
         if not transcript:
             transcript = Transcript(
                 session_id=session.id,
                 model_name=result["model_name"],
-                language=result.get("language"),
-                full_text=result.get("full_text", ""),
+                language="en" if translated else detected_language,
+                full_text=english_full_text,
+                original_text=raw_full_text if translated else None,
+                original_language=detected_language if translated else None,
                 duration_seconds=result.get("duration_seconds"),
             )
             db.add(transcript)
             db.flush()
         else:
             transcript.model_name = result["model_name"]
-            transcript.language = result.get("language")
-            transcript.full_text = result.get("full_text", "")
+            transcript.language = "en" if translated else detected_language
+            transcript.full_text = english_full_text
+            transcript.original_text = raw_full_text if translated else None
+            transcript.original_language = detected_language if translated else None
             transcript.duration_seconds = result.get("duration_seconds")
             db.execute(delete(TranscriptSegment).where(TranscriptSegment.transcript_id == transcript.id))
 
         segments_to_index = []
-        for seg in result.get("segments", []):
+        for orig_seg, eng_seg in zip(result.get("segments", []), english_segments):
             segment_obj = TranscriptSegment(
                 transcript_id=transcript.id,
-                segment_index=seg["segment_index"],
-                start_seconds=seg["start_seconds"],
-                end_seconds=seg["end_seconds"],
-                text=seg["text"],
+                segment_index=eng_seg["segment_index"],
+                start_seconds=eng_seg["start_seconds"],
+                end_seconds=eng_seg["end_seconds"],
+                text=eng_seg["text"],
+                original_text=orig_seg["text"] if translated else None,
             )
             db.add(segment_obj)
             segments_to_index.append(segment_obj)
@@ -144,6 +175,12 @@ def process_session_transcription(self, session_id: str) -> dict:
         session.error_message = None
         session.finalized_at = session.finalized_at or utc_now()
         db.commit()
+
+        if not transcript.full_text.strip():
+            logger.info("Skipping AI extraction — transcript is empty for session=%s", session.id)
+            session.status = SessionStatus.done.value
+            db.commit()
+            return {"status": "ok", "session_id": session.id, "extraction_skipped": True}
 
         try:
             _, _, extraction = prepare_extraction_record(db, session.id, force_reset=True)
@@ -330,6 +367,18 @@ def process_session_ai_extraction(self, session_id: str) -> dict:
 
     except Retry:
         raise
+
+    except AssistantLLMError as exc:
+        if "empty" in str(exc).lower():
+            logger.warning("Skipping AI extraction — transcript empty, no retry. session=%s", session_id)
+            extraction = db.scalar(select(AIExtraction).where(AIExtraction.session_id == session_id))
+            if extraction:
+                extraction.status = AIExtractionStatus.done.value
+                extraction.error_message = "No speech detected (empty transcript)."
+                extraction.completed_at = utc_now()
+                db.commit()
+            return {"status": "skipped", "reason": "empty_transcript"}
+        raise exc  # Will be caught by generic Exception block for normal retry logic
 
     except AssistantPipelineError as exc:
         db.rollback()

@@ -52,6 +52,7 @@ from app.schemas.app_user import (
     AppUserPreferencesUpdateRequest,
     AppDeviceUpdateRequest,
     AppCaptureTranscriptResponse,
+    AppTranscriptSegmentResponse,
     AppAuthRequest,
     AppDeleteAccountRequest,
     AppForgotPasswordConfirmRequest,
@@ -1122,10 +1123,16 @@ def ask_memories_semantically(
     """
     Perform a natural language query over all recorded memories using vector search and LLM synthesis.
     """
+    query_text = payload.query
+    # If the user searches in Hindi/other language, translate to English for better semantic match
+    from app.services.translation import needs_translation, translate_to_english
+    if needs_translation(None, query_text):
+        query_text = translate_to_english(query_text)
+
     result = query_memories_semantically(
         db=db,
         user_id=user.id,
-        query=payload.query
+        query=query_text
     )
     return AppMemoryQueryResponse(**result)
 
@@ -1166,6 +1173,12 @@ async def ask_memory_voice(
         if not query_text:
             shutil.rmtree(temp_dir, ignore_errors=True)
             return JSONResponse(status_code=400, content={"error": "Could not understand audio"})
+
+        # Translate voice query to English if spoken in Hindi/other languages
+        from app.services.translation import needs_translation, translate_to_english
+        detected_lang = transcription.get("language")
+        if needs_translation(detected_lang, query_text):
+            query_text = await asyncio.to_thread(translate_to_english, query_text, detected_lang)
 
         try:
             memory_result = query_memories_semantically(db=db, user_id=user.id, query=query_text)
@@ -1470,7 +1483,10 @@ def get_user_capture_transcript(
             & (DeviceUserBinding.is_active.is_(True)),
         )
         .where(CaptureSession.id == session_id)
-        .options(selectinload(CaptureSession.transcript))
+        .options(
+            selectinload(CaptureSession.transcript),
+            selectinload(CaptureSession.transcript).selectinload(Transcript.segments)
+        )
     )
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
@@ -1483,8 +1499,21 @@ def get_user_capture_transcript(
         session_id=session.id,
         model_name=transcript.model_name,
         language=transcript.language,
+        original_language=transcript.original_language,
+        was_translated=transcript.original_text is not None,
         full_text=transcript.full_text,
+        original_text=transcript.original_text,
         duration_seconds=transcript.duration_seconds,
+        diarized_transcript=[
+            AppTranscriptSegmentResponse(
+                speaker=f"Speaker {seg.segment_index // 5 + 1}",  # Fallback speaker ID
+                text=seg.text,
+                original_text=seg.original_text,
+                start_seconds=seg.start_seconds,
+                end_seconds=seg.end_seconds,
+            )
+            for seg in sorted(transcript.segments, key=lambda x: x.segment_index)
+        ] if transcript.segments else None,
     )
 
 

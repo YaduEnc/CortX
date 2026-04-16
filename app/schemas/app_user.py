@@ -105,12 +105,24 @@ class AppCaptureListItemResponse(BaseModel):
     has_audio: bool
 
 
+class AppTranscriptSegmentResponse(BaseModel):
+    speaker: str
+    text: str
+    original_text: str | None = None
+    start_seconds: float
+    end_seconds: float
+
+
 class AppCaptureTranscriptResponse(BaseModel):
     session_id: str
     model_name: str
     language: str | None
+    original_language: str | None = None
+    was_translated: bool = False
     full_text: str
+    original_text: str | None = None
     duration_seconds: float | None
+    diarized_transcript: list[AppTranscriptSegmentResponse] | None = None
 
 
 class AppCaptureUploadResponse(BaseModel):

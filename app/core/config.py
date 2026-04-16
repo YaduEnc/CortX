@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
     s3_use_ssl: bool = False
 
-    whisper_model_size: str = "small"
+    whisper_model_size: str = "large-v3"
     whisper_model_path: str | None = None
     whisper_download_root: str | None = None
     whisper_compute_type: str = "int8"

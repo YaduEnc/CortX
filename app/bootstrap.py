@@ -30,6 +30,16 @@ def main() -> None:
                 "WHERE tts_provider IS DISTINCT FROM 'elevenlabs'"
             )
         )
+        # Add translation columns to transcripts table
+        conn.execute(
+            text("ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS original_text TEXT")
+        )
+        conn.execute(
+            text("ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS original_language TEXT")
+        )
+        conn.execute(
+            text("ALTER TABLE transcript_segments ADD COLUMN IF NOT EXISTS original_text TEXT")
+        )
     try:
         get_storage().ensure_bucket()
     except Exception as exc:  # noqa: BLE001
