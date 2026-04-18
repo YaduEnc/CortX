@@ -2,6 +2,7 @@
 .env
 .venv/
 venv/
+.graphify-venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -26,3 +27,7 @@ DerivedData/
 # IDE
 .vscode/
 .idea/
+
+# Graphify
+graphify-out/cache/
+graphify-out/.graphify_*
